@@ -55,7 +55,7 @@ export function ApplySavedAddonDialog({ savedAddon, onClose }: ApplySavedAddonDi
     try {
       const accountsToApply = accounts
         .filter((a) => selectedAccountIds.has(a.id))
-        .map((a) => ({ id: a.id, authKey: a.authKey }))
+        .map((a) => ({ id: a.id, authKey: a.authKey, debridKeys: a.debridKeys }))
 
       const bulkResult = await applySavedAddonToAccounts(savedAddon.id, accountsToApply, strategy)
 

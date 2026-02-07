@@ -14,7 +14,7 @@ import { maskUrl, getAddonConfigureUrl } from '@/lib/utils'
 import { useAddonStore } from '@/store/addonStore'
 import { useUIStore } from '@/store/uiStore'
 import { SavedAddon } from '@/types/saved-addon'
-import { Copy, MoreVertical, Pencil, RefreshCw, Settings, Trash2 } from 'lucide-react'
+import { Copy, Key, MoreVertical, Pencil, RefreshCw, Settings, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { SavedAddonDetails } from './SavedAddonDetails'
 
@@ -174,19 +174,25 @@ export function SavedAddonCard({ savedAddon, latestVersion, onUpdate }: SavedAdd
               </div>
             </div>
 
-            {/* Tags */}
-            {savedAddon.tags.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {savedAddon.tags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="text-xs px-2 py-1 rounded-md bg-muted text-muted-foreground"
-                  >
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            )}
+            {/* Tags and Debrid Badge */}
+            <div className="flex flex-wrap gap-1">
+              {savedAddon.debridConfig && (
+                <span className="text-xs px-2 py-1 rounded-md bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400 flex items-center gap-1">
+                  <Key className="h-3 w-3" />
+                  {savedAddon.debridConfig.serviceType === 'realdebrid'
+                    ? 'RD'
+                    : savedAddon.debridConfig.serviceType}
+                </span>
+              )}
+              {savedAddon.tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="text-xs px-2 py-1 rounded-md bg-muted text-muted-foreground"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
 
             {/* Dates */}
             <div className="text-xs text-muted-foreground space-y-1">

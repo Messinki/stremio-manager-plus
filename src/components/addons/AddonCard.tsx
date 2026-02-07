@@ -23,8 +23,9 @@ import { getStremioLink, maskUrl } from '@/lib/utils'
 import { useAddonStore } from '@/store/addonStore'
 import { useUIStore } from '@/store/uiStore'
 import { AddonDescriptor } from '@/types/addon'
-import { Copy, ExternalLink, RefreshCw, Settings } from 'lucide-react'
+import { Copy, ExternalLink, Key, RefreshCw, Settings } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { stripDebridApiKey, getDebridServiceLabel } from '@/lib/debrid-config'
 import { CinemetaConfigurationDialog } from './CinemetaConfigurationDialog'
 import { isCinemetaAddon, detectAllPatches } from '@/lib/cinemeta-utils'
 import { CinemetaManifest } from '@/types/cinemeta'
@@ -313,6 +314,26 @@ export function AddonCard({
                 placeholder="e.g., movies, debrid, streaming"
               />
             </div>
+
+            {/* Debrid Detection Notice */}
+            {(() => {
+              const detection = stripDebridApiKey(addon.transportUrl)
+              if (!detection) return null
+              return (
+                <div className="p-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
+                  <div className="flex items-center gap-2 text-sm text-amber-800 dark:text-amber-400">
+                    <Key className="h-4 w-4 flex-shrink-0" />
+                    <span>
+                      <strong>{getDebridServiceLabel(detection.debridConfig.serviceType)}</strong>{' '}
+                      API key detected — it will be stripped and saved as a template.
+                    </span>
+                  </div>
+                  <p className="text-xs text-amber-700 dark:text-amber-500 mt-1 ml-6">
+                    Each account's own key will be injected when installing from the library.
+                  </p>
+                </div>
+              )
+            })()}
 
             {saveError && <p className="text-sm text-destructive">{saveError}</p>}
           </div>

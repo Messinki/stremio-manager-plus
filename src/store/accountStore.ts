@@ -58,6 +58,8 @@ interface AccountStore {
     id: string,
     data: { name: string; authKey?: string; email?: string; password?: string }
   ) => Promise<void>
+  setDebridKey: (accountId: string, serviceType: string, apiKey: string) => Promise<void>
+  removeDebridKey: (accountId: string, serviceType: string) => Promise<void>
   clearError: () => void
   reset: () => void
 }
@@ -556,6 +558,35 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
     } finally {
       set({ loading: false })
     }
+  },
+
+  setDebridKey: async (accountId, serviceType, apiKey) => {
+    const account = get().accounts.find((acc) => acc.id === accountId)
+    if (!account) throw new Error('Account not found')
+
+    const encryptedKey = await encrypt(apiKey, getEncryptionKey())
+    const debridKeys = { ...account.debridKeys, [serviceType]: encryptedKey }
+    const updatedAccount = { ...account, debridKeys }
+
+    const accounts = get().accounts.map((acc) => (acc.id === accountId ? updatedAccount : acc))
+    set({ accounts })
+    await localforage.setItem(STORAGE_KEY, accounts)
+  },
+
+  removeDebridKey: async (accountId, serviceType) => {
+    const account = get().accounts.find((acc) => acc.id === accountId)
+    if (!account) throw new Error('Account not found')
+
+    const debridKeys = { ...account.debridKeys }
+    delete debridKeys[serviceType]
+    const updatedAccount = {
+      ...account,
+      debridKeys: Object.keys(debridKeys).length > 0 ? debridKeys : undefined,
+    }
+
+    const accounts = get().accounts.map((acc) => (acc.id === accountId ? updatedAccount : acc))
+    set({ accounts })
+    await localforage.setItem(STORAGE_KEY, accounts)
   },
 
   clearError: () => {

@@ -276,6 +276,7 @@ export function AddonList({ accountId }: AddonListProps) {
         <InstallSavedAddonDialog
           accountId={accountId}
           accountAuthKey={account.authKey}
+          debridKeys={account.debridKeys}
           open={installFromLibraryOpen}
           onOpenChange={setInstallFromLibraryOpen}
         />

@@ -9,6 +9,7 @@ export interface StremioAccount {
   email?: string
   authKey: string // Encrypted
   password?: string // Encrypted (optional)
+  debridKeys?: Record<string, string> // Encrypted debrid API keys, keyed by service type (e.g., 'realdebrid')
   addons: AddonDescriptor[]
   lastSync: Date
   status: AccountStatus

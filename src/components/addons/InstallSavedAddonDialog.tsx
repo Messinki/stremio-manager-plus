@@ -10,11 +10,13 @@ import { Label } from '@/components/ui/label'
 import { useAddonStore } from '@/store/addonStore'
 import { useAccountStore } from '@/store/accountStore'
 import { MergeStrategy, BulkResult } from '@/types/saved-addon'
+import { Key } from 'lucide-react'
 import { useState } from 'react'
 
 interface InstallSavedAddonDialogProps {
   accountId: string
   accountAuthKey: string
+  debridKeys?: Record<string, string>
   open: boolean
   onOpenChange: (open: boolean) => void
   onSuccess?: () => void
@@ -23,6 +25,7 @@ interface InstallSavedAddonDialogProps {
 export function InstallSavedAddonDialog({
   accountId,
   accountAuthKey,
+  debridKeys,
   open,
   onOpenChange,
   onSuccess,
@@ -87,7 +90,7 @@ export function InstallSavedAddonDialog({
     setSuccess(false)
 
     try {
-      const accountsToApply = [{ id: accountId, authKey: accountAuthKey }]
+      const accountsToApply = [{ id: accountId, authKey: accountAuthKey, debridKeys }]
 
       const bulkResult = await bulkApplySavedAddons(
         Array.from(selectedSavedAddonIds),
@@ -258,7 +261,17 @@ export function InstallSavedAddonDialog({
                         className="mt-0.5"
                       />
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">{savedAddon.name}</p>
+                        <div className="flex items-center gap-1.5">
+                          <p className="text-sm font-medium truncate">{savedAddon.name}</p>
+                          {savedAddon.debridConfig && (
+                            <span className="flex-shrink-0 text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400 flex items-center gap-0.5">
+                              <Key className="h-3 w-3" />
+                              {savedAddon.debridConfig.serviceType === 'realdebrid'
+                                ? 'RD'
+                                : savedAddon.debridConfig.serviceType}
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-muted-foreground truncate">
                           {savedAddon.manifest.name}
                         </p>

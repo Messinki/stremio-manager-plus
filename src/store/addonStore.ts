@@ -15,6 +15,7 @@ import {
 } from '@/lib/addon-storage'
 import { normalizeTagName } from '@/lib/addon-validator'
 import { decrypt } from '@/lib/crypto'
+import { stripDebridApiKey, injectDebridApiKey } from '@/lib/debrid-config'
 import { useAuthStore } from '@/store/authStore'
 import { AddonManifest } from '@/types/addon'
 import {
@@ -33,6 +34,27 @@ const getEncryptionKey = () => {
   const key = useAuthStore.getState().encryptionKey
   if (!key) throw new Error('App is locked')
   return key
+}
+
+/**
+ * Resolve saved addons with decrypted debrid keys.
+ * Must be called with already-decrypted debrid keys.
+ */
+function resolveAddonsWithKeys(
+  savedAddons: SavedAddon[],
+  decryptedDebridKeys: Record<string, string>
+): SavedAddon[] {
+  return savedAddons.map((addon) => {
+    if (!addon.debridConfig) return addon
+
+    const apiKey = decryptedDebridKeys[addon.debridConfig.serviceType]
+    if (!apiKey) return addon
+
+    return {
+      ...addon,
+      installUrl: injectDebridApiKey(addon.installUrl, addon.debridConfig, apiKey),
+    }
+  })
 }
 
 interface AddonStore {
@@ -76,11 +98,12 @@ interface AddonStore {
     savedAddonId: string,
     accountId: string,
     accountAuthKey: string,
-    strategy?: MergeStrategy
+    strategy?: MergeStrategy,
+    debridKeys?: Record<string, string>
   ) => Promise<MergeResult>
   applySavedAddonToAccounts: (
     savedAddonId: string,
-    accountIds: Array<{ id: string; authKey: string }>,
+    accountIds: Array<{ id: string; authKey: string; debridKeys?: Record<string, string> }>,
     strategy?: MergeStrategy
   ) => Promise<BulkResult>
 
@@ -89,23 +112,24 @@ interface AddonStore {
     tag: string,
     accountId: string,
     accountAuthKey: string,
-    strategy?: MergeStrategy
+    strategy?: MergeStrategy,
+    debridKeys?: Record<string, string>
   ) => Promise<MergeResult>
   applyTagToAccounts: (
     tag: string,
-    accountIds: Array<{ id: string; authKey: string }>,
+    accountIds: Array<{ id: string; authKey: string; debridKeys?: Record<string, string> }>,
     strategy?: MergeStrategy
   ) => Promise<BulkResult>
 
   // === Bulk Operations (Account-First Workflow) ===
   bulkApplySavedAddons: (
     savedAddonIds: string[],
-    accountIds: Array<{ id: string; authKey: string }>,
+    accountIds: Array<{ id: string; authKey: string; debridKeys?: Record<string, string> }>,
     strategy?: MergeStrategy
   ) => Promise<BulkResult>
   bulkApplyTag: (
     tag: string,
-    accountIds: Array<{ id: string; authKey: string }>,
+    accountIds: Array<{ id: string; authKey: string; debridKeys?: Record<string, string> }>,
     strategy?: MergeStrategy
   ) => Promise<BulkResult>
   bulkRemoveAddons: (
@@ -193,15 +217,19 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
       // Use provided name or fall back to manifest name
       const addonName = name.trim() || manifest.name
 
+      // Detect and strip debrid API key from the URL
+      const stripResult = stripDebridApiKey(installUrl)
+
       const savedAddon: SavedAddon = {
         id: crypto.randomUUID(),
         name: addonName,
-        installUrl,
+        installUrl: stripResult ? stripResult.templateUrl : installUrl,
         manifest,
         tags: normalizedTags,
         createdAt: new Date(),
         updatedAt: new Date(),
         sourceType: 'manual',
+        debridConfig: stripResult?.debridConfig,
       }
 
       const library = { ...get().library, [savedAddon.id]: savedAddon }
@@ -352,7 +380,8 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
     savedAddonId,
     accountId,
     accountAuthKey,
-    strategy = 'replace-matching'
+    strategy = 'replace-matching',
+    debridKeys
   ) => {
     set({ loading: true, error: null })
     try {
@@ -365,10 +394,20 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
       const authKey = await decrypt(accountAuthKey, getEncryptionKey())
       const currentAddons = await getAddons(authKey)
 
+      // Resolve debrid keys: decrypt account's debrid keys and inject into addon templates
+      let resolvedAddons = [savedAddon]
+      if (debridKeys) {
+        const decrypted: Record<string, string> = {}
+        for (const [service, encKey] of Object.entries(debridKeys)) {
+          decrypted[service] = await decrypt(encKey, getEncryptionKey())
+        }
+        resolvedAddons = resolveAddonsWithKeys([savedAddon], decrypted)
+      }
+
       // Merge the saved addon
       const { addons: updatedAddons, result } = await mergeAddons(
         currentAddons,
-        [savedAddon],
+        resolvedAddons,
         strategy
       )
 
@@ -405,7 +444,13 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
 
   // === Application (Tag-based) ===
 
-  applyTagToAccount: async (tag, accountId, accountAuthKey, strategy = 'replace-matching') => {
+  applyTagToAccount: async (
+    tag,
+    accountId,
+    accountAuthKey,
+    strategy = 'replace-matching',
+    debridKeys
+  ) => {
     const savedAddons = get().getSavedAddonsByTag(tag)
     if (savedAddons.length === 0) {
       throw new Error(`No saved addons found with tag: ${tag}`)
@@ -417,10 +462,20 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
       const authKey = await decrypt(accountAuthKey, getEncryptionKey())
       const currentAddons = await getAddons(authKey)
 
+      // Resolve debrid keys
+      let resolvedAddons = savedAddons
+      if (debridKeys) {
+        const decrypted: Record<string, string> = {}
+        for (const [service, encKey] of Object.entries(debridKeys)) {
+          decrypted[service] = await decrypt(encKey, getEncryptionKey())
+        }
+        resolvedAddons = resolveAddonsWithKeys(savedAddons, decrypted)
+      }
+
       // Merge all saved addons with this tag
       const { addons: updatedAddons, result } = await mergeAddons(
         currentAddons,
-        savedAddons,
+        resolvedAddons,
         strategy
       )
 
@@ -472,14 +527,24 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
         details: [],
       }
 
-      for (const { id: accountId, authKey: accountAuthKey } of accountIds) {
+      for (const { id: accountId, authKey: accountAuthKey, debridKeys } of accountIds) {
         try {
           const authKey = await decrypt(accountAuthKey, getEncryptionKey())
           const currentAddons = await getAddons(authKey)
 
+          // Resolve debrid keys for this account
+          let resolvedAddons = savedAddons
+          if (debridKeys) {
+            const decrypted: Record<string, string> = {}
+            for (const [service, encKey] of Object.entries(debridKeys)) {
+              decrypted[service] = await decrypt(encKey, getEncryptionKey())
+            }
+            resolvedAddons = resolveAddonsWithKeys(savedAddons, decrypted)
+          }
+
           const { addons: updatedAddons, result: mergeResult } = await mergeAddons(
             currentAddons,
-            savedAddons,
+            resolvedAddons,
             strategy
           )
 

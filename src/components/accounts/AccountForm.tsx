@@ -10,8 +10,10 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useAccounts } from '@/hooks/useAccounts'
+import { useAccountStore } from '@/store/accountStore'
 import { useUIStore } from '@/store/uiStore'
-import { AlertCircle } from 'lucide-react'
+import { SUPPORTED_DEBRID_SERVICES } from '@/lib/debrid-config'
+import { AlertCircle, Eye, EyeOff, Key } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 export function AccountForm() {
@@ -20,12 +22,17 @@ export function AccountForm() {
   const editingAccount = useUIStore((state) => state.editingAccount)
   const { addAccountByAuthKey, addAccountByCredentials, updateAccount, loading } = useAccounts()
 
+  const { setDebridKey } = useAccountStore()
+
   const [mode, setMode] = useState<'authKey' | 'credentials'>('credentials')
   const [name, setName] = useState('')
   const [authKey, setAuthKey] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [debridApiKey, setDebridApiKey] = useState('')
+  const [showDebridKey, setShowDebridKey] = useState(false)
+  const [debridService, setDebridService] = useState('realdebrid')
 
   useEffect(() => {
     if (editingAccount) {
@@ -50,6 +57,10 @@ export function AccountForm() {
       setPassword('')
       setError('')
     }
+    // Always reset debrid fields
+    setDebridApiKey('')
+    setShowDebridKey(false)
+    setDebridService('realdebrid')
   }, [editingAccount, isOpen])
 
   const handleClose = () => {
@@ -74,6 +85,10 @@ export function AccountForm() {
               : undefined,
           password: mode === 'credentials' && password ? password : undefined,
         })
+        // Save debrid key if provided
+        if (debridApiKey.trim()) {
+          await setDebridKey(editingAccount.id, debridService, debridApiKey.trim())
+        }
       } else {
         // Add mode
         if (mode === 'authKey') {
@@ -191,6 +206,62 @@ export function AccountForm() {
                 />
               </div>
             </>
+          )}
+
+          {/* Debrid API Key Section */}
+          {isEditing && (
+            <div className="space-y-2 border-t pt-4">
+              <div className="flex items-center gap-2">
+                <Key className="h-4 w-4 text-muted-foreground" />
+                <Label>Debrid API Key</Label>
+              </div>
+
+              <select
+                value={debridService}
+                onChange={(e) => setDebridService(e.target.value)}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              >
+                {SUPPORTED_DEBRID_SERVICES.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+
+              <div className="relative">
+                <Input
+                  type={showDebridKey ? 'text' : 'password'}
+                  value={debridApiKey}
+                  onChange={(e) => setDebridApiKey(e.target.value)}
+                  placeholder={
+                    editingAccount?.debridKeys?.[debridService]
+                      ? '••••• (key saved - enter new to replace)'
+                      : 'Enter API key'
+                  }
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowDebridKey(!showDebridKey)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {showDebridKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+
+              {editingAccount?.debridKeys && Object.keys(editingAccount.debridKeys).length > 0 && (
+                <div className="text-xs text-muted-foreground">
+                  Saved keys:{' '}
+                  {Object.keys(editingAccount.debridKeys)
+                    .map((s) => SUPPORTED_DEBRID_SERVICES.find((d) => d.value === s)?.label || s)
+                    .join(', ')}
+                </div>
+              )}
+
+              <p className="text-xs text-muted-foreground">
+                Used to inject your API key into addons installed from the library.
+              </p>
+            </div>
           )}
 
           {error && (
