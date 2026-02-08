@@ -9,6 +9,7 @@ import { decrypt, encrypt } from '@/lib/crypto'
 import { useAuthStore } from '@/store/authStore'
 import { accountExportSchema } from '@/lib/validation'
 import { loadAddonLibrary, saveAddonLibrary } from '@/lib/addon-storage'
+import { extractDebridKeysFromAddons, getDebridServiceLabel } from '@/lib/debrid-config'
 import { updateLatestVersions as updateLatestVersionsCoordinator } from '@/lib/store-coordinator'
 import { toast } from '@/hooks/use-toast'
 import { AccountExport, StremioAccount } from '@/types/account'
@@ -189,9 +190,23 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
         manifest: sanitizeAddonManifest(addon.manifest),
       }))
 
+      // Auto-detect debrid keys from addon URLs
+      const detectedKeys = extractDebridKeysFromAddons(normalizedAddons)
+      let debridKeys = account.debridKeys ? { ...account.debridKeys } : undefined
+      const newlyDetected: Array<{ serviceType: string; addonName: string }> = []
+
+      for (const { serviceType, apiKey, addonName } of detectedKeys) {
+        if (!debridKeys || !debridKeys[serviceType]) {
+          if (!debridKeys) debridKeys = {}
+          debridKeys[serviceType] = await encrypt(apiKey, getEncryptionKey())
+          newlyDetected.push({ serviceType, addonName })
+        }
+      }
+
       const updatedAccount = {
         ...account,
         addons: normalizedAddons,
+        debridKeys,
         lastSync: new Date(),
         status: 'active' as const,
       }
@@ -200,6 +215,17 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
 
       set({ accounts })
       await localforage.setItem(STORAGE_KEY, accounts)
+
+      // Notify about auto-detected keys
+      if (newlyDetected.length > 0) {
+        const keyList = newlyDetected
+          .map((k) => `${getDebridServiceLabel(k.serviceType)} (from ${k.addonName})`)
+          .join(', ')
+        toast({
+          title: 'Debrid Keys Detected',
+          description: `Auto-saved ${newlyDetected.length} debrid key${newlyDetected.length !== 1 ? 's' : ''} for "${account.name}": ${keyList}`,
+        })
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to sync account'
       const account = get().accounts.find((acc) => acc.id === id)
@@ -239,9 +265,23 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
           manifest: sanitizeAddonManifest(addon.manifest),
         }))
 
+        // Auto-detect debrid keys from addon URLs
+        const detectedKeys = extractDebridKeysFromAddons(normalizedAddons)
+        let debridKeys = account.debridKeys ? { ...account.debridKeys } : undefined
+        const newlyDetected: Array<{ serviceType: string; addonName: string }> = []
+
+        for (const { serviceType, apiKey, addonName } of detectedKeys) {
+          if (!debridKeys || !debridKeys[serviceType]) {
+            if (!debridKeys) debridKeys = {}
+            debridKeys[serviceType] = await encrypt(apiKey, getEncryptionKey())
+            newlyDetected.push({ serviceType, addonName })
+          }
+        }
+
         const updatedAccount = {
           ...account,
           addons: normalizedAddons,
+          debridKeys,
           lastSync: new Date(),
           status: 'active' as const,
         }
@@ -251,6 +291,17 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
         )
 
         set({ accounts: updatedAccounts })
+
+        // Notify about auto-detected keys
+        if (newlyDetected.length > 0) {
+          const keyList = newlyDetected
+            .map((k) => `${getDebridServiceLabel(k.serviceType)} (from ${k.addonName})`)
+            .join(', ')
+          toast({
+            title: 'Debrid Keys Detected',
+            description: `Auto-saved ${newlyDetected.length} debrid key${newlyDetected.length !== 1 ? 's' : ''} for "${account.name}": ${keyList}`,
+          })
+        }
       } catch (error) {
         // Mark account as error but continue with others
         const updatedAccounts = get().accounts.map((acc) =>

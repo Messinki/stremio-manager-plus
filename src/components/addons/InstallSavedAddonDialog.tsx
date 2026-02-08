@@ -10,8 +10,9 @@ import { Label } from '@/components/ui/label'
 import { useAddonStore } from '@/store/addonStore'
 import { useAccountStore } from '@/store/accountStore'
 import { MergeStrategy, BulkResult } from '@/types/saved-addon'
-import { Key } from 'lucide-react'
-import { useState } from 'react'
+import { getDebridServiceLabel } from '@/lib/debrid-config'
+import { AlertTriangle, Key } from 'lucide-react'
+import { useMemo, useState } from 'react'
 
 interface InstallSavedAddonDialogProps {
   accountId: string
@@ -40,6 +41,16 @@ export function InstallSavedAddonDialog({
   const [result, setResult] = useState<BulkResult | null>(null)
 
   const savedAddons = Object.values(library).sort((a, b) => a.name.localeCompare(b.name))
+
+  // Compute which selected addons need debrid keys the account doesn't have
+  const missingKeyAddons = useMemo(() => {
+    return savedAddons.filter(
+      (addon) =>
+        selectedSavedAddonIds.has(addon.id) &&
+        addon.debridConfig &&
+        (!debridKeys || !debridKeys[addon.debridConfig.serviceType])
+    )
+  }, [savedAddons, selectedSavedAddonIds, debridKeys])
 
   const toggleSavedAddon = (savedAddonId: string) => {
     setSelectedSavedAddonIds((prev) => {
@@ -299,6 +310,29 @@ export function InstallSavedAddonDialog({
               )}
             </div>
           </div>
+
+          {/* Missing Debrid Key Warning */}
+          {missingKeyAddons.length > 0 && !success && (
+            <div className="p-3 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 flex gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="text-sm text-amber-700 dark:text-amber-300">
+                <p className="font-medium">
+                  {missingKeyAddons.length} addon{missingKeyAddons.length !== 1 ? 's' : ''} require
+                  debrid keys not configured on this account:
+                </p>
+                <ul className="mt-1 list-disc list-inside text-xs">
+                  {missingKeyAddons.map((addon) => (
+                    <li key={addon.id}>
+                      {addon.name} ({getDebridServiceLabel(addon.debridConfig!.serviceType)})
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-1 text-xs">
+                  These addons won't work until you add the matching debrid keys to the account.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Actions */}
           <div className="flex gap-2 pt-4">

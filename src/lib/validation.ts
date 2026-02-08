@@ -54,6 +54,14 @@ export const savedAddonSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   lastUsed: z.string().optional(),
+  debridConfig: z
+    .object({
+      format: z.enum(['plaintext-url', 'base64-json']),
+      keyField: z.string(),
+      serviceField: z.string().optional(),
+      serviceType: z.string(),
+    })
+    .optional(),
   sourceType: z.enum(['manual', 'cloned-from-account']),
   sourceAccountId: z.string().optional(),
   health: z

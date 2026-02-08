@@ -1,3 +1,4 @@
+import { AddonDescriptor } from '@/types/addon'
 import { DebridConfig, DebridFormat } from '@/types/saved-addon'
 
 /** Placeholder token used in template URLs where the API key was stripped */
@@ -260,3 +261,29 @@ export const SUPPORTED_DEBRID_SERVICES = [
   { value: 'offcloud', label: 'Offcloud' },
   { value: 'putio', label: 'Put.io' },
 ] as const
+
+/**
+ * Scan an array of addon descriptors and extract any debrid API keys found in their URLs.
+ * Returns one entry per unique service type (first key found wins).
+ */
+export function extractDebridKeysFromAddons(
+  addons: AddonDescriptor[]
+): Array<{ serviceType: string; apiKey: string; addonName: string }> {
+  const found = new Map<string, { apiKey: string; addonName: string }>()
+
+  for (const addon of addons) {
+    const result = stripDebridApiKey(addon.transportUrl)
+    if (result && !found.has(result.debridConfig.serviceType)) {
+      found.set(result.debridConfig.serviceType, {
+        apiKey: result.strippedKey,
+        addonName: addon.manifest.name,
+      })
+    }
+  }
+
+  return Array.from(found.entries()).map(([serviceType, { apiKey, addonName }]) => ({
+    serviceType,
+    apiKey,
+    addonName,
+  }))
+}

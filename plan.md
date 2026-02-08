@@ -1,6 +1,6 @@
 # Stremio Manager Plus - Project Plan
 
-**Last updated:** 2026-02-07
+**Last updated:** 2026-02-08
 
 ---
 
@@ -55,10 +55,11 @@ Transform the addon library from storing account-specific addon URLs into a **un
 - [x] Debrid badge (RD) shown on saved addon cards in library
 - [x] Debrid badge shown in install dialog addon list
 - [x] Detection notice in "Save to Library" dialog
+- [x] Made saved addon URL field editable (was locked due to CORS, no longer needed since API keys are stripped)
 - [ ] Handle migration of existing saved addons (offer to detect and strip keys from old saves)
-- [ ] Export/import: include `debridConfig` in exports, handle on import
-- [ ] Warning when installing debrid addon to account with no matching key
-- [ ] Auto-detect debrid key from account's existing addons on sync
+- [x] Export/import: include `debridConfig` in exports, handle on import
+- [x] Warning when installing debrid addon to account with no matching key
+- [x] Auto-detect debrid key from account's existing addons on sync
 
 ---
 
@@ -88,3 +89,7 @@ Transform the addon library from storing account-specific addon URLs into a **un
 - [x] Added per-account debrid key management UI
 - [x] Added debrid badges to library and install dialogs
 - [x] TypeScript compiles clean, Vite build passes
+- [x] Made saved addon install URL editable in edit dialog
+- [x] Export/import now preserves `debridConfig` on saved addons (Zod schema updated)
+- [x] Warning banner in install dialog when debrid addon lacks matching account key
+- [x] Auto-detect and save debrid keys from account's existing addons on sync
