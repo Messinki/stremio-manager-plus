@@ -28,7 +28,7 @@ git push origin main
 ### Step 4: Connect GitHub
 1. Click **"Connect GitHub"**
 2. Authorize Cloudflare to access your GitHub
-3. Select your repository: `Asymons/stremio-account-manager` (or your fork)
+3. Select your repository: `Messinki/stremio-manager-plus`
 4. Click **"Begin setup"**
 
 ### Step 5: Configure Build Settings
