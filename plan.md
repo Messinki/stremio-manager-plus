@@ -1,95 +1,180 @@
 # Stremio Manager Plus - Project Plan
 
-**Last updated:** 2026-02-08
+**Last updated:** 2026-02-20
 
 ---
 
-## Long-Term Vision
+## Direction Change
 
-Transform the addon library from storing account-specific addon URLs into a **universal addon template system** where saved addons are API-key-agnostic. Each user account stores its own debrid API keys, and addons are dynamically populated with the correct key at install time.
+The app is being migrated from a purely client-side SPA (browser IndexedDB storage) to a multi-user web app with a real persistent backend. Data will live in a Cloudflare D1 (SQLite) database, accessible from any device.
 
----
-
-## Short-Term Plan (Current Sprint)
-
-### Phase 1: Research & Data Modeling — COMPLETE
-
-#### 1.1 Document API Key Formats
-- [x] Researched all major addon formats
-- [x] Documented in `docs/api-key-formats.md`
-- [x] Two extractable formats: `plaintext-url` (Torrentio) and `base64-json` (Comet, Jackettio, Annatar, Debrid Search)
-- [x] Encrypted/server-side addons cannot be templated (save as-is)
-
-#### 1.2 Data Model Changes
-- [x] Added `DebridConfig` interface and `debridConfig?` field to `SavedAddon` type
-- [x] Added `debridKeys?: Record<string, string>` (encrypted, per-service) to `StremioAccount` type
-- [x] `installUrl` on SavedAddon now stores template URL when debrid key is stripped
-
-### Phase 2: API Key Detection & Stripping — COMPLETE
-
-- [x] Built `src/lib/debrid-config.ts` with `stripDebridApiKey()` and `injectDebridApiKey()`
-- [x] Supports `plaintext-url` format (Torrentio pipe-delimited)
-- [x] Supports `base64-json` format (Comet, Jackettio, Annatar, Debrid Search)
-- [x] Placeholder token: `{{DEBRID_API_KEY}}`
-- [x] Integrated stripping into `createSavedAddon()` in addonStore
-- [x] Save dialog shows detection notice when debrid key is found
-
-### Phase 3: Per-Account API Key Management — COMPLETE
-
-- [x] `setDebridKey()` and `removeDebridKey()` actions in accountStore
-- [x] Keys encrypted with AES-256-GCM (same as auth keys)
-- [x] Account edit dialog has debrid key section with service selector
-- [x] Masked input with reveal toggle
-- [x] Shows which keys are already saved per account
-
-### Phase 4: Key Injection on Install — COMPLETE
-
-- [x] `applySavedAddonToAccount()` resolves debrid keys before merging
-- [x] `applyTagToAccount()` resolves debrid keys before merging
-- [x] `bulkApplySavedAddons()` resolves per-account debrid keys
-- [x] All apply/install UI components pass `debridKeys` from account
-- [x] `resolveAddonsWithKeys()` helper decrypts and injects keys
-
-### Phase 5: UI Polish — PARTIAL
-
-- [x] Debrid badge (RD) shown on saved addon cards in library
-- [x] Debrid badge shown in install dialog addon list
-- [x] Detection notice in "Save to Library" dialog
-- [x] Made saved addon URL field editable (was locked due to CORS, no longer needed since API keys are stripped)
-- [ ] Handle migration of existing saved addons (offer to detect and strip keys from old saves)
-- [x] Export/import: include `debridConfig` in exports, handle on import
-- [x] Warning when installing debrid addon to account with no matching key
-- [x] Auto-detect debrid key from account's existing addons on sync
+**Stack:**
+- Frontend: React SPA on Cloudflare Pages (unchanged)
+- Backend: Cloudflare Pages Functions (Workers) at `/functions/api/`
+- Database: Cloudflare D1 (SQLite)
+- Auth: Email + password, JWT (HMAC-SHA256)
+- Encryption: **Removed for now** — HTTPS + auth is sufficient for a personal tool
 
 ---
 
-## Future Ideas (Backlog)
+## Architecture
 
-- Auto-detect debrid API key from a user's existing addon URLs when adding an account
-- Support for multiple debrid services per account (already supported in data model)
-- Addon "profiles" - predefined sets of addons with config templates
-- Debrid key rotation - update all accounts when a user's key changes
-- Health check templated addons by injecting a test key
-- Merge logic: match by manifest ID instead of exact URL for templated addons
+```
+React SPA (Cloudflare Pages)
+  └── fetch('/api/...') with JWT token
+        └── Cloudflare Pages Functions (/functions/api/)
+              └── Cloudflare D1 (SQLite database)
+```
 
 ---
 
-## Completed
+## Phase 1: Database Schema & Cloudflare Config — TODO
 
-- [x] Initial research of Torrentio URL format (plain text `realdebrid=KEY` in pipe-delimited path)
-- [x] Initial research of Comet URL format (base64-encoded JSON with `debridApiKey` field)
-- [x] Created CLAUDE.md and plan.md
-- [x] Full research of all major debrid addon formats
-- [x] Created `docs/api-key-formats.md` with complete format catalog
+- [ ] Create `wrangler.toml` with D1 binding
+- [ ] Create `schema.sql` with 4 tables: `users`, `accounts`, `saved_addons`, `account_addon_states`
+- [ ] Run `wrangler d1 create stremio-manager` to provision the database
+- [ ] Apply schema: `wrangler d1 execute stremio-manager --file=schema.sql`
+
+### D1 Schema (outline)
+```sql
+users               — id, email, password_hash, password_salt, created_at
+accounts            — id, user_id, name, email, auth_key, password, debrid_keys (JSON), addons (JSON), last_sync, status, created_at, updated_at
+saved_addons        — id, user_id, name, install_url, manifest (JSON), tags (JSON), debrid_config (JSON), source_type, health (JSON), created_at, updated_at, last_used
+account_addon_states — id, user_id, account_id, installed_addons (JSON), last_sync
+```
+
+---
+
+## Phase 2: Cloudflare Pages Functions (Backend API) — TODO
+
+New files to create under `/functions/api/`:
+
+```
+functions/api/
+  _middleware.ts          ← JWT verification (protects all /api/* routes)
+  _types.ts               ← Shared Env type (DB: D1Database, JWT_SECRET: string)
+  auth/
+    login.ts              ← POST /api/auth/login
+    register.ts           ← POST /api/auth/register
+  accounts/
+    index.ts              ← GET /api/accounts, POST /api/accounts
+    [id].ts               ← GET/PUT/DELETE /api/accounts/:id
+  addons/
+    index.ts              ← GET /api/addons, POST /api/addons
+    [id].ts               ← PUT/DELETE /api/addons/:id
+  addon-states/
+    index.ts              ← GET/PUT /api/addon-states
+```
+
+JWT: use `@tsndr/cloudflare-worker-jwt` (Workers-compatible). Sign with `JWT_SECRET` Worker secret. 30-day expiry.
+
+Password hashing: PBKDF2-SHA256 via Web Crypto (built into Workers runtime).
+
+---
+
+## Phase 3: Frontend — Auth Layer — TODO
+
+- [ ] Create `src/pages/AuthPage.tsx` — login/signup form
+- [ ] Create `src/api/backend-client.ts` — typed fetch wrapper with JWT attachment + 401 handling
+- [ ] Rewrite `src/store/authStore.ts`:
+  - Remove: master password, PBKDF2 key derivation, lock/unlock, CryptoKey state
+  - Add: `user`, `token`, `login()`, `register()`, `logout()`, `initialize()` (reads token from localStorage)
+- [ ] Update `src/App.tsx`: replace master-password gate with `token ? <App> : <AuthPage>`
+- [ ] Delete `src/components/auth/MasterPasswordSetup.tsx`
+- [ ] Delete `src/components/auth/UnlockDialog.tsx`
+- [ ] Delete `src/components/auth/ForgotPasswordFlow.tsx`
+
+---
+
+## Phase 4: Frontend — Replace LocalForage with API Calls — TODO
+
+### accountStore.ts
+Replace all `localforage.getItem/setItem` with `backendClient` calls. Remove all `encrypt()`/`decrypt()` calls — authKey, password, debridKeys stored as plain text.
+
+| Old | New |
+|-----|-----|
+| `localforage.getItem('stremio-manager:accounts')` | `GET /api/accounts` |
+| `localforage.setItem(...)` per account | `POST /api/accounts` or `PUT /api/accounts/:id` |
+| `deleteAccount()` (local only) | `DELETE /api/accounts/:id` |
+
+### addonStore.ts
+Replace all `loadAddonLibrary()`/`saveAddonLibrary()` with API calls.
+
+| Old | New |
+|-----|-----|
+| `loadAddonLibrary()` | `GET /api/addons` |
+| `saveAddonLibrary(library)` | `POST /api/addons` or `PUT /api/addons/:id` |
+| `loadAccountAddonStates()` | `GET /api/addon-states` |
+| `saveAccountAddonStates(states)` | `PUT /api/addon-states` |
+
+### Files to delete
+- `src/lib/crypto.ts`
+- `src/lib/addon-storage.ts`
+- `src/lib/storage-reset.ts`
+
+### Packages to remove
+- `localforage`
+- `crypto-js`
+
+### Packages to add
+- `wrangler` (dev dep)
+- `@tsndr/cloudflare-worker-jwt`
+
+---
+
+## Phase 5: Debrid Key Simplification — TODO
+
+Keys are now plain text in D1 — no decrypt step needed before injection.
+
+- [ ] Update `src/store/addonStore.ts` — remove decrypt step from `resolveAddonsWithKeys()` and all apply/bulk-apply actions
+- [ ] Remove `encryptionKey` param from `applySavedAddonToAccount()`, `applyTagToAccount()`, `bulkApplySavedAddons()`
+- [ ] Remove `encryptionKey` prop from UI components: `AddonInstaller.tsx`, `BulkApplyDialog.tsx`
+- [ ] `src/lib/debrid-config.ts` — no changes needed (inject logic unchanged)
+
+---
+
+## Phase 6: Export/Import Migration Path — TODO
+
+No code changes needed. Users migrate via existing export/import:
+1. Export data from old browser app (downloads JSON)
+2. Register account in new app
+3. Import JSON → stores call `POST /api/accounts` + `POST /api/addons` per item
+
+Verify the import path works correctly end-to-end after store migration.
+
+---
+
+## Phase 7: Dev Setup & Deployment — TODO
+
+```bash
+# Install wrangler
+npm install -D wrangler
+
+# Create D1 database (run once)
+npx wrangler d1 create stremio-manager
+
+# Set JWT secret
+npx wrangler secret put JWT_SECRET
+
+# Local dev with D1
+npx wrangler pages dev dist --d1=DB
+```
+
+Production:
+- D1 database binding added in Cloudflare Pages dashboard settings
+- `JWT_SECRET` set as Pages encrypted environment variable
+- Deploy as normal (push to GitHub → auto-deploy)
+
+---
+
+## Previous Work (Completed Before Direction Change)
+
+The debrid API key templating system was fully built and is still valid — the data model and injection logic carry over unchanged. Only the persistence layer and auth are being replaced.
+
+- [x] Researched all major addon debrid key formats (see `docs/api-key-formats.md`)
 - [x] Built debrid detection engine (`src/lib/debrid-config.ts`)
-- [x] Updated `SavedAddon` type with `debridConfig` field
-- [x] Updated `StremioAccount` type with `debridKeys` field
-- [x] Integrated key stripping into save-to-library flow
-- [x] Integrated key injection into all install/apply flows
-- [x] Added per-account debrid key management UI
-- [x] Added debrid badges to library and install dialogs
-- [x] TypeScript compiles clean, Vite build passes
-- [x] Made saved addon install URL editable in edit dialog
-- [x] Export/import now preserves `debridConfig` on saved addons (Zod schema updated)
-- [x] Warning banner in install dialog when debrid addon lacks matching account key
-- [x] Auto-detect and save debrid keys from account's existing addons on sync
+- [x] Per-account debrid key management UI
+- [x] Key injection on install/apply
+- [x] Export/import with debrid config
+- [x] Auto-detect debrid keys on sync
+- [x] Warning when installing debrid addon without matching key

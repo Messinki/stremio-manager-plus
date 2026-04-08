@@ -98,6 +98,7 @@ export function BulkActionsDialog({ selectedAccounts, onClose }: BulkActionsDial
     const accountsData = selectedAccounts.map((a) => ({
       id: a.id,
       authKey: a.authKey,
+      debridKeys: a.debridKeys,
     }))
 
     try {

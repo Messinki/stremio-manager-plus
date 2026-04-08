@@ -15,7 +15,7 @@ import {
 } from '@/lib/addon-storage'
 import { normalizeTagName } from '@/lib/addon-validator'
 import { decrypt } from '@/lib/crypto'
-import { stripDebridApiKey, injectDebridApiKey } from '@/lib/debrid-config'
+import { stripDebridApiKey, injectDebridApiKey, DEBRID_KEY_PLACEHOLDER } from '@/lib/debrid-config'
 import { useAuthStore } from '@/store/authStore'
 import { AddonManifest } from '@/types/addon'
 import {
@@ -404,6 +404,13 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
         resolvedAddons = resolveAddonsWithKeys([savedAddon], decrypted)
       }
 
+      // Safety: block if debrid placeholder is still present
+      if (resolvedAddons[0].installUrl.includes(DEBRID_KEY_PLACEHOLDER)) {
+        throw new Error(
+          `Cannot install "${savedAddon.name}": this addon requires a ${savedAddon.debridConfig?.serviceType || 'debrid'} key not configured on this account`
+        )
+      }
+
       // Merge the saved addon
       const { addons: updatedAddons, result } = await mergeAddons(
         currentAddons,
@@ -472,10 +479,21 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
         resolvedAddons = resolveAddonsWithKeys(savedAddons, decrypted)
       }
 
-      // Merge all saved addons with this tag
+      // Safety: filter out addons that still have the debrid placeholder
+      const safeAddons = resolvedAddons.filter((addon) => {
+        if (addon.installUrl.includes(DEBRID_KEY_PLACEHOLDER)) {
+          console.warn(
+            `Skipping addon "${addon.name}": debrid key not available for ${addon.debridConfig?.serviceType}`
+          )
+          return false
+        }
+        return true
+      })
+
+      // Merge safe addons with this tag
       const { addons: updatedAddons, result } = await mergeAddons(
         currentAddons,
-        resolvedAddons,
+        safeAddons,
         strategy
       )
 
@@ -542,9 +560,27 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
             resolvedAddons = resolveAddonsWithKeys(savedAddons, decrypted)
           }
 
+          // Safety: filter out addons that still have the debrid placeholder
+          // (account is missing the required debrid key)
+          const safeAddons = resolvedAddons.filter((addon) => {
+            if (addon.installUrl.includes(DEBRID_KEY_PLACEHOLDER)) {
+              console.warn(
+                `Skipping addon "${addon.name}" for account ${accountId}: debrid key not available for ${addon.debridConfig?.serviceType}`
+              )
+              return false
+            }
+            return true
+          })
+
+          if (safeAddons.length === 0 && resolvedAddons.length > 0) {
+            throw new Error(
+              'All selected addons require debrid keys not configured on this account'
+            )
+          }
+
           const { addons: updatedAddons, result: mergeResult } = await mergeAddons(
             currentAddons,
-            resolvedAddons,
+            safeAddons,
             strategy
           )
 
