@@ -57,18 +57,17 @@ See [plan.md](plan.md) for the current long-term and short-term plan.
 - [docs/api-key-formats.md](docs/api-key-formats.md) - Complete catalog of how each Stremio addon stores debrid API keys
 - [manifest_examples.js](manifest_examples.js) - Example addon URLs showing API key formats (DO NOT COMMIT - contains real keys)
 
+### Backend / D1 Migration (in progress — see Phase 1+ in plan.md)
+
+- [wrangler.toml](wrangler.toml) - Cloudflare Pages config + D1 binding (`DB`). `database_id` is filled in after `npx wrangler d1 create stremio-manager`.
+- [schema.sql](schema.sql) - D1 schema: 5 tables (`users`, `sessions`, `accounts`, `saved_addons`, `account_addon_states`) with FK cascades on `user_id`. All timestamps are INTEGER unix-ms; JSON-shaped fields are TEXT.
+- Backend routes will live under `/functions/api/` (Cloudflare Pages Functions).
+
 ## Workflow Rules
-
-### Handoff Protocol
-
-When told to **"handoff"**, you must:
-1. Update `plan.md` with current progress, what's done, and what's next
-2. Update any relevant documentation
-3. Do NOT create git commits unless explicitly asked
 
 ### Git Commits
 
-- **Only commit when explicitly asked** - never auto-commit
+- **Only commit when explicitly asked** - never auto-commit (overrides global handoff auto-commit)
 - simple git commit style, use as checkpoints, save the entire project
 - Never commit files containing API keys or secrets
 
@@ -76,7 +75,6 @@ When told to **"handoff"**, you must:
 
 - Read files before modifying them
 - Prefer editing existing files over creating new ones
-- Keep `plan.md` updated as work progresses
 - `manifest_examples.js` is in `.gitignore` - it contains real API keys for reference only
 
 ## RealDebrid API Key Injection - Key Context

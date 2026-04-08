@@ -18,6 +18,9 @@ dist-ssr
 build
 *.local
 
+# Wrangler / Cloudflare local state (local D1 sqlite, etc.)
+.wrangler/
+
 # Environment variables
 .env
 .env.local

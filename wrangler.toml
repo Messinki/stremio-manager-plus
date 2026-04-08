@@ -1,0 +1,11 @@
+name = "stremio-manager"
+compatibility_date = "2024-09-23"
+pages_build_output_dir = "dist"
+
+# D1 database binding.
+# Run `npx wrangler d1 create stremio-manager` to provision the database,
+# then paste the returned `database_id` value below.
+[[d1_databases]]
+binding = "DB"
+database_name = "stremio-manager"
+database_id = "d2d28968-7c60-413f-85c8-555b3bbd0d5f"
