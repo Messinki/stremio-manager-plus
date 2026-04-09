@@ -40,12 +40,13 @@ export function AccountForm() {
       if (editingAccount.email) {
         setMode('credentials')
         setEmail(editingAccount.email)
-        // We can't decrypt the password to show it, but we can set a placeholder or just leave it blank
-        // For simplicity in update, we leave it blank. If they enter content, we update it.
+        // Leave the password field blank on edit. If the user types something
+        // in, that's treated as "change the password to this".
         setPassword('')
       } else {
         setMode('authKey')
-        // Don't show existing auth key for security
+        // Don't surface the existing auth key in the input — keep the field
+        // blank so it can't be shoulder-surfed from the edit dialog.
         setAuthKey('')
       }
     } else {
@@ -168,7 +169,9 @@ export function AccountForm() {
                 type="password"
                 value={authKey}
                 onChange={(e) => setAuthKey(e.target.value)}
-                placeholder={isEditing ? '••••• (encrypted)' : 'Enter your Stremio auth key'}
+                placeholder={
+                  isEditing ? 'Leave blank to keep unchanged' : 'Enter your Stremio auth key'
+                }
                 required={!isEditing}
               />
               <p className="text-xs text-muted-foreground">

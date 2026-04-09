@@ -3,11 +3,9 @@ import { Button } from '@/components/ui/button'
 import { useToast } from '@/hooks/use-toast'
 import { useAccounts } from '@/hooks/useAccounts'
 import { useAddons } from '@/hooks/useAddons'
-import { decrypt } from '@/lib/crypto'
 import { maskEmail } from '@/lib/utils'
 import { useAccountStore } from '@/store/accountStore'
 import { useAddonStore } from '@/store/addonStore'
-import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { ArrowLeft, GripVertical, Library, RefreshCw } from 'lucide-react'
 import { useCallback, useState } from 'react'
@@ -31,7 +29,6 @@ export function AddonList({ accountId }: AddonListProps) {
   const latestVersions = useAddonStore((state) => state.latestVersions)
   const updateLatestVersions = useAccountStore((state) => state.updateLatestVersions)
   const [updatingAll, setUpdatingAll] = useState(false)
-  const encryptionKey = useAuthStore((state) => state.encryptionKey)
   const syncAccount = useAccountStore((state) => state.syncAccount)
   const { toast } = useToast()
 
@@ -44,7 +41,7 @@ export function AddonList({ accountId }: AddonListProps) {
   })
 
   const handleCheckUpdates = useCallback(async () => {
-    if (!account || !encryptionKey) return
+    if (!account) return
 
     setCheckingUpdates(true)
     try {
@@ -84,35 +81,32 @@ export function AddonList({ accountId }: AddonListProps) {
     } finally {
       setCheckingUpdates(false)
     }
-  }, [account, encryptionKey, addons, toast, updateLatestVersions, syncAccount, accountId])
+  }, [account, addons, toast, updateLatestVersions, syncAccount, accountId])
 
   const handleUpdateAddon = useCallback(
     async (_accountId: string, addonId: string) => {
-      if (!account || !encryptionKey) return
+      if (!account) return
 
-      const authKey = await decrypt(account.authKey, encryptionKey)
-      await reinstallAddon(authKey, addonId)
+      await reinstallAddon(account.authKey, addonId)
 
       // Sync account to refresh addon list
       await syncAccount(accountId)
     },
-    [account, encryptionKey, accountId, syncAccount]
+    [account, accountId, syncAccount]
   )
 
   const handleUpdateAll = useCallback(async () => {
-    if (!account || !encryptionKey) return
+    if (!account) return
 
     const addonsToUpdate = updatesAvailable.map((addon) => addon.manifest.id)
     if (addonsToUpdate.length === 0) return
 
     setUpdatingAll(true)
     try {
-      const authKey = await decrypt(account.authKey, encryptionKey)
-
       let successCount = 0
       for (const addonId of addonsToUpdate) {
         try {
-          await reinstallAddon(authKey, addonId)
+          await reinstallAddon(account.authKey, addonId)
           successCount++
         } catch (error) {
           console.warn(`Failed to update addon ${addonId}:`, error)
@@ -135,7 +129,7 @@ export function AddonList({ accountId }: AddonListProps) {
     } finally {
       setUpdatingAll(false)
     }
-  }, [account, encryptionKey, updatesAvailable, accountId, syncAccount, toast])
+  }, [account, updatesAvailable, accountId, syncAccount, toast])
 
   if (!account) {
     return (

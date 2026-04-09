@@ -107,12 +107,3 @@ export interface BulkResult {
   errors: Array<{ accountId: string; error: string }>
   details: Array<{ accountId: string; result: MergeResult }>
 }
-
-/**
- * Storage keys for LocalForage
- */
-export const STORAGE_KEYS = {
-  ADDON_LIBRARY: 'stremio-manager:addon-library',
-  ACCOUNT_ADDONS: 'stremio-manager:account-addons',
-  ACCOUNTS: 'stremio-manager:accounts',
-} as const

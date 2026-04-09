@@ -57,19 +57,24 @@ export function FAQPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Is my data stored in the cloud?</CardTitle>
+            <CardTitle>Where is my data stored?</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-3 text-muted-foreground">
               <p>
-                No. This tool is completely client-side only. Everything is stored within your
-                browser's local storage. We do not have any servers, and your data never leaves your
-                device.
+                Your accounts and saved addons are stored in a Cloudflare D1 database tied to the
+                email and password you sign up with. That means you can log in from any browser or
+                device and see the same data — no more losing everything when you clear your browser
+                cache.
               </p>
               <p>
-                <strong>Important:</strong> If you wipe your browser's cache or local storage, you
-                will lose all your progress. This is why the import/export feature exists - make
-                sure to regularly export your configuration as a backup.
+                Requests to addons (manifest fetches, install/remove) still go directly from your
+                browser to the addon's host and to Stremio's official API. Our backend only handles
+                your account data.
+              </p>
+              <p>
+                You can still use the import/export feature to keep an offline JSON backup of your
+                configuration.
               </p>
             </div>
           </CardContent>
@@ -77,52 +82,33 @@ export function FAQPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Are my credentials safe?</CardTitle>
+            <CardTitle>How are my credentials protected?</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-3 text-muted-foreground">
-              <p>Your credentials are protected with industry-standard cryptographic encryption.</p>
               <p>
-                <strong>How encryption works:</strong>
+                <strong>Your app password</strong> (the one you use to log into this tool) is never
+                stored in plain text. It's hashed with PBKDF2-SHA256 (600,000 iterations) before
+                being saved, and only the hash is kept on the server.
               </p>
-              <ul className="list-disc list-inside space-y-2 ml-2">
-                <li>
-                  <strong>Master password:</strong> You set a password that encrypts all your
-                  credentials. Without it, data cannot be decrypted.
-                </li>
-                <li>
-                  <strong>Strong encryption:</strong> AES-256-GCM with PBKDF2-SHA256 (600,000
-                  iterations) - industry standard cryptographic security.
-                </li>
-                <li>
-                  <strong>Local storage only:</strong> Encrypted credentials stored in your
-                  browser's IndexedDB. Never sent to any server except Stremio's official API.
-                </li>
-                <li>
-                  <strong>Session-based:</strong> Your master password is never stored. You must
-                  enter it when opening the app.
-                </li>
-              </ul>
               <p>
-                <strong>Important:</strong>
+                <strong>Sessions</strong> use an opaque random token stored in an HttpOnly, Secure,
+                SameSite=Strict cookie. JavaScript on the page can't read it, so an XSS bug can't
+                steal your session.
               </p>
-              <ul className="list-disc list-inside space-y-2 ml-2">
-                <li>
-                  ⚠️ <strong>Lost password = lost data.</strong> There is no recovery. Write down
-                  your password or use a password manager.
-                </li>
-                <li>
-                  ⚠️ <strong>Password required on startup.</strong> You'll need to unlock the app
-                  each time.
-                </li>
-              </ul>
+              <p>
+                <strong>Stremio auth keys and debrid API keys</strong> are stored as plain columns
+                in the D1 database, which Cloudflare encrypts at rest. They're served back over
+                HTTPS only to your authenticated session. This is sufficient for a personal tool; if
+                you have a stricter threat model, run your own instance.
+              </p>
               <p>
                 <strong>Best practices:</strong>
               </p>
               <ul className="list-disc list-inside space-y-2 ml-2">
-                <li>Use a strong password (8+ characters minimum)</li>
+                <li>Use a strong, unique password (8+ characters minimum)</li>
                 <li>Store it in a password manager</li>
-                <li>Use OS-level disk encryption (FileVault, BitLocker)</li>
+                <li>Log out from shared devices when you're done</li>
               </ul>
             </div>
           </CardContent>
@@ -304,7 +290,8 @@ export function FAQPage() {
               <p className="pt-2">
                 <strong>Note:</strong> Your AuthKey is sensitive information that provides access to
                 your Stremio account. Keep it secure and never share it with others. This tool
-                stores your AuthKey encrypted in your browser's local storage for your convenience.
+                stores your AuthKey on its backend, scoped to your logged-in account, so you can
+                access it from any device after signing in.
               </p>
             </div>
           </CardContent>

@@ -5,17 +5,7 @@
  * This module can import all stores, but stores should NOT import this module.
  */
 
-import { useAccountStore } from '@/store/accountStore'
 import { useAddonStore } from '@/store/addonStore'
-
-/**
- * Reset all application stores to their initial state
- * Called during master password reset to ensure clean slate
- */
-export function resetAllStores(): void {
-  useAccountStore.getState().reset()
-  useAddonStore.getState().reset()
-}
 
 /**
  * Update latest addon versions across relevant stores

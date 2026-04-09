@@ -1,6 +1,6 @@
 # Stremio Manager Plus - Project Plan
 
-**Last updated:** 2026-04-08 (Phase 2 done + smoke-tested end-to-end against local D1)
+**Last updated:** 2026-04-08 (Phases 1–7 code-side complete. Phase 5 audit clean. Phase 6 export/import verified by code review. Phase 7 dashboard ops still pending — D1 binding + WAF rate-limit rule need to be set in the Cloudflare dashboard before going live.)
 
 ---
 
@@ -9,6 +9,7 @@
 The app is being migrated from a purely client-side SPA (browser IndexedDB storage) to a multi-user web app with a real persistent backend. Data will live in a Cloudflare D1 (SQLite) database, accessible from any device.
 
 **Stack:**
+
 - Frontend: React SPA on Cloudflare Pages (unchanged)
 - Backend: Cloudflare Pages Functions (Workers) at `/functions/api/`
 - Database: Cloudflare D1 (SQLite)
@@ -47,6 +48,7 @@ React SPA (Cloudflare Pages)
 - [x] Apply schema to remote: 13 queries (24 rows written), 5 tables verified via `SELECT name FROM sqlite_master`
 
 ### D1 Schema (outline)
+
 ```sql
 users                — id, email, password_hash, password_salt, created_at
 sessions             — token (PK), user_id, expires_at, created_at
@@ -105,89 +107,123 @@ functions/api/
 
 ---
 
-## Phase 3: Frontend — Auth Layer — TODO (NEXT UP)
+## Phase 3: Frontend — Auth Layer — DONE
 
 Backend smoke test (2026-04-08) confirmed the full path works against local D1:
 `POST /api/auth/register` → 201 + `Set-Cookie` → `GET /api/auth/me` → 200 → `POST /api/accounts` with `debridKeys` JSON → round-trips through serializer cleanly. Middleware blocks unauthenticated `/api/*` with 401.
 
-- [ ] Create `src/pages/AuthPage.tsx` — login/signup form (tabs or toggle)
-- [ ] Create `src/api/backend-client.ts` — typed fetch wrapper
-  - Always sends `credentials: 'include'` so the session cookie rides along
-  - On 401 → clear auth state, redirect to `<AuthPage>`
-  - No token handling in JS — cookies are HttpOnly, we can't see them
-- [ ] Rewrite `src/store/authStore.ts`:
-  - Remove: master password, PBKDF2 key derivation, lock/unlock, CryptoKey state, anything related to local encryption
-  - Add: `user` (null | { id, email }), `login()`, `register()`, `logout()`, `initialize()` (calls `GET /api/auth/me` on startup to restore session)
-- [ ] Update `src/App.tsx`: replace master-password gate with `user ? <App> : <AuthPage>`
-- [ ] Delete `src/components/auth/MasterPasswordSetup.tsx`
-- [ ] Delete `src/components/auth/UnlockDialog.tsx`
-- [ ] Delete `src/components/auth/ForgotPasswordFlow.tsx`
+- [x] `src/pages/AuthPage.tsx` — login/signup with mode toggle (no shadcn `tabs` component existed; built a small two-button toggle inline)
+- [x] `src/api/backend-client.ts` — typed fetch wrapper with `BackendError` / `UnauthorizedError`. Always sends `credentials: 'include'`. Auth helpers (`me`, `login`, `register`, `logout`) live in the same file. `me()` uses `throwOn401: false` so the startup check returns `null` instead of throwing.
+- [x] Rewrote `src/store/authStore.ts`:
+
+  - Removed: `isLocked`, `encryptionKey`, `setupMasterPassword`, `unlock`, `lock`, `resetMasterPassword`, `isPasswordSet`, plus all `crypto` / session-key imports
+  - Added: `user` (null | { id, email }), `isInitializing`, `initialize()` (one /me call), `login()`, `register()`, `logout()`, `clearUser()`
+- [x] `src/App.tsx`: gate is now `isInitializingAuth || !storesReady ? Loading : (user ? <Layout> : <AuthPage>)`
+- [x] Deleted `src/components/auth/{MasterPasswordSetup,UnlockDialog,ForgotPasswordFlow}.tsx` and the now-empty `src/components/auth/` directory
+- [x] `vite.config.ts` — `server.proxy['/api'] → http://localhost:8788` so the dev SPA hits the wrangler `pages dev` server at the same origin (cookies work without CORS)
+
+### Build status after Phase 3
+
+`tsc --noEmit` reports **4 expected errors** — these are the consumers Phase 4 will refactor. They still try to read `encryptionKey` off the auth store to decrypt locally-stored Stremio auth keys, which no longer exist:
+
+```
+src/store/accountStore.ts:35              — useAuthStore.getState().encryptionKey
+src/store/addonStore.ts:34                — useAuthStore.getState().encryptionKey
+src/components/addons/AddonList.tsx:34    — encryptionKey selector + decrypt() calls
+src/components/addons/CinemetaConfigurationDialog.tsx:55 — same
+```
+
+Backend `tsc --project functions/tsconfig.json` is clean.
 
 ---
 
-## Phase 4: Frontend — Replace LocalForage with API Calls — TODO
+## Phase 4: Frontend — Replace LocalForage with API Calls — DONE
 
-### accountStore.ts
-Replace all `localforage.getItem/setItem` with `backendClient` calls. Remove all `encrypt()`/`decrypt()` calls — authKey, password, debridKeys stored as plain text.
+- [x] `src/api/backend-client.ts` — added `accountsApi`, `savedAddonsApi`, `addonStatesApi` with typed CRUD wrappers + serializer/deserializer that converts unix-ms ↔ `Date` so the rest of the app can stay on `Date`-bearing models.
+- [x] `src/store/accountStore.ts` — rewritten: `localforage` + all `encrypt/decrypt` calls gone. Every mutation hits the backend (`POST`/`PUT`/`DELETE /api/accounts`) and stores the canonical row that comes back. `authKey`, `password`, `debridKeys` are plain text now.
+- [x] `src/store/addonStore.ts` — rewritten the same way against `savedAddonsApi` + `addonStatesApi`. `latestVersions` is now in-memory only (was a `localforage` cache; safe to lose on refresh).
+- [x] `src/components/addons/AddonList.tsx` and `CinemetaConfigurationDialog.tsx` — dropped `encryptionKey` selector + `decrypt(authKey, ...)` calls; now use `account.authKey` directly.
+- [x] `src/App.tsx` — store init is now gated on `user`. On mount we restore session + UI prefs; once `user` becomes non-null we trigger `initializeAccounts()` + `initializeAddons()` (these need the session cookie). On logout we call `reset()` on both stores.
+- [x] `src/lib/addon-url.ts` — extracted `normalizeUrl` + `findSavedAddonByUrl` from the old `addon-storage.ts` (they're pure URL helpers, no storage).
+- [x] Deleted: `src/lib/crypto.ts`, `src/lib/addon-storage.ts`, `src/lib/storage-reset.ts`, `src/hooks/useLocalStorage.ts` (all unused after this phase).
+- [x] Trimmed `src/lib/store-coordinator.ts` (`resetAllStores` was only called by master-password reset; gone).
+- [x] Removed `STORAGE_KEYS` from `src/types/saved-addon.ts` (only the deleted files referenced it).
+- [x] `npm uninstall localforage crypto-js @types/crypto-js`
+- [x] `npx tsc --noEmit` and `npx tsc --project functions/tsconfig.json --noEmit` are both clean. `npm run build` succeeds.
 
-| Old | New |
-|-----|-----|
-| `localforage.getItem('stremio-manager:accounts')` | `GET /api/accounts` |
-| `localforage.setItem(...)` per account | `POST /api/accounts` or `PUT /api/accounts/:id` |
-| `deleteAccount()` (local only) | `DELETE /api/accounts/:id` |
+### Notes / gotchas
 
-### addonStore.ts
-Replace all `loadAddonLibrary()`/`saveAddonLibrary()` with API calls.
-
-| Old | New |
-|-----|-----|
-| `loadAddonLibrary()` | `GET /api/addons` |
-| `saveAddonLibrary(library)` | `POST /api/addons` or `PUT /api/addons/:id` |
-| `loadAccountAddonStates()` | `GET /api/addon-states` |
-| `saveAccountAddonStates(states)` | `PUT /api/addon-states` |
-
-### Files to delete
-- `src/lib/crypto.ts`
-- `src/lib/addon-storage.ts`
-- `src/lib/storage-reset.ts`
-
-### Packages to remove
-- `localforage`
-- `crypto-js`
-
-### Packages to add
-- `wrangler` (dev dep)
-- `@cloudflare/workers-types` (dev dep, for `D1Database` etc.)
-
-No auth library needed — sessions are a D1 table and two helper functions. Password hashing is Web Crypto.
+- Backend serializers send timestamps as unix-ms `number`s. Conversion to/from `Date` lives in `backend-client.ts` so stores stay on the existing `StremioAccount`/`SavedAddon` shapes — no churn in the rest of the codebase.
+- `accountStore.exportAccounts` now reads the saved-addon library by calling `savedAddonsApi.list()` instead of localforage. `importAccounts` POSTs each account + saved addon individually (one request per item — fine for the import volume; could be batched later if it becomes a problem).
+- `addonStore.importLibrary(merge=false)` deletes every existing saved addon on the backend before re-creating from the import. Best-effort: errors on individual deletes are logged and skipped.
+- `bulkApplySavedAddons`, `applyTagToAccount`, `checkAllHealth`, `renameTag` all do N PUTs (one per addon) where the old code wrote one big localforage blob. Acceptable for current scale; can optimize with a backend bulk endpoint later if needed.
+- Phase 3 had warned about an unconditional `Promise.all([initializeAccounts(), initializeAddons()])` on mount — that would now fire before the session cookie is checked. `App.tsx` was reworked to gate this on `user`. On logout, both stores are `reset()` so the next user doesn't see stale data.
 
 ---
 
-## Phase 5: Debrid Key Simplification — TODO
+## Phase 5: Debrid Key Simplification — DONE
 
-Keys are now plain text in D1 — no decrypt step needed before injection.
+Keys are plain text in D1, so the decrypt step has already been removed from
+`resolveAddonsWithKeys()` and every apply/bulk-apply action. The apply functions
+still take `accountAuthKey: string` and `debridKeys?: Record<string, string>`
+parameters — those are now just plain text, but the parameter shapes haven't
+been renamed (kept as-is for now).
 
-- [ ] Update `src/store/addonStore.ts` — remove decrypt step from `resolveAddonsWithKeys()` and all apply/bulk-apply actions
-- [ ] Remove `encryptionKey` param from `applySavedAddonToAccount()`, `applyTagToAccount()`, `bulkApplySavedAddons()`
-- [ ] Remove `encryptionKey` prop from UI components: `AddonInstaller.tsx`, `BulkApplyDialog.tsx`
-- [ ] `src/lib/debrid-config.ts` — no changes needed (inject logic unchanged)
+- [x] Audited `AddonInstaller.tsx`, `BulkActionsDialog.tsx`, `InstallSavedAddonDialog.tsx`, `AddonList.tsx`, `AddonCard.tsx`, `CinemetaConfigurationDialog.tsx`, `ApplySavedAddonDialog.tsx`, `AccountForm.tsx` — `grep encryptionKey` returns 0 matches across `src/`. No leftover prop drilling.
+- [x] Cleaned up stale comments + UI text that still claimed local encryption: `src/types/account.ts` (struct comments), `src/components/accounts/AccountForm.tsx` (decrypt comment + "(encrypted)" placeholder), `src/pages/FAQPage.tsx` ("Is my data stored in the cloud?" + "Are my credentials safe?" sections rewritten to describe the D1/session/PBKDF2 model).
+- [x] `src/lib/debrid-config.ts` — confirmed unchanged (inject logic is plaintext-string in/out and was never coupled to encryption).
+- [ ] Optional rename: drop the `accountAuthKey`/`debridKeys` params from the apply functions and just look them up on the store from `accountId`. Cleaner call sites but a wider refactor. **Deferred** — defer until something else makes us touch these signatures.
+
+Note: legacy unused debrid validation schemas in `src/lib/validation.ts`
+(`debridKeySchema`, `debridConfigurationSchema`, etc.) are dead code from the
+old per-account debrid manager. Only `accountExportSchema` is imported. Left
+in place — separate cleanup task if/when someone touches that file.
 
 ---
 
-## Phase 6: Export/Import Migration Path — TODO
+## Phase 6: Export/Import Migration Path — DONE (code-verified)
 
 No code changes needed. Users migrate via existing export/import:
+
 1. Export data from old browser app (downloads JSON)
 2. Register account in new app
 3. Import JSON → stores call `POST /api/accounts` + `POST /api/addons` per item
 
-Verify the import path works correctly end-to-end after store migration.
+### Verification (code review)
+
+Traced both paths against the new API surface:
+
+- **Export** (`accountStore.exportAccounts`): pulls saved addons via
+  `savedAddonsApi.list()`, maps in-memory accounts to the export shape
+  (`createdAt/updatedAt/lastUsed` → ISO strings via the deserializer's `Date`).
+  Auth key + password are conditionally included based on `includeCredentials`.
+- **Import** (`accountStore.importAccounts`): validates with
+  `accountExportSchema`, then calls `accountsApi.create()` per account and
+  `savedAddonsApi.create()` per saved addon. `ImportDialog` then calls
+  `addonStore.initialize()` so the saved-addon library re-pulls from the
+  backend (the import flow itself doesn't push entries into the in-memory
+  library, since `initialize()` is the canonical source).
+- Schemas line up: `accountExportSchema.savedAddons[].*` matches every field
+  the backend `POST /api/addons` accepts.
+- Build is clean (`npx tsc --noEmit`, `npx tsc --project functions/tsconfig.json --noEmit`, `npm run build` all pass).
+
+### Known limitations (pre-existing, not regressions)
+
+- `debridKeys` are **not** included in the export schema. They get
+  re-detected from addon URLs on the next sync via
+  `extractDebridKeysFromAddons()`. This matches the previous LocalForage-only
+  behavior — fixing it requires extending `accountExportSchema` and the
+  `accounts[].*` map in `exportAccounts`. Out of scope for v1.
+- Importing an account exported **without** credentials will fail at the
+  backend (`POST /api/accounts` rejects empty `authKey`). Such exports are
+  effectively addon-list backups, not re-importable accounts. Same as before.
 
 ---
 
-## Phase 7: Dev Setup & Deployment — PARTIAL
+## Phase 7: Dev Setup & Deployment — DONE (code-side); dashboard ops still pending
 
 Already done (Phase 1):
+
 - [x] `npm install -D wrangler @cloudflare/workers-types`
 - [x] `npx wrangler d1 create stremio-manager` → id pasted into `wrangler.toml`
 - [x] Schema applied to `--local` and `--remote`
@@ -210,11 +246,21 @@ During Phase 3/4 frontend dev: point the SPA's `backend-client.ts` at `http://lo
 
 For pure API smoke testing without the SPA: `npm run build` once, then `npx wrangler pages dev` serves `dist/` + `functions/` together with the D1 binding. This is what was used to validate Phase 2.
 
-### Production
-- D1 binding added in Cloudflare Pages dashboard → Settings → Functions → D1 bindings (binding name: `DB`, points to the same `stremio-manager` database)
-- No secrets to set — sessions don't need a signing key
-- Deploy as normal (push to GitHub → auto-deploy)
-- Add rate limit rule on `/api/auth/login` in Cloudflare dashboard → Security → WAF (5 req/min per IP)
+### Production — pending dashboard ops
+
+Code is ready to deploy. The remaining items all live in the Cloudflare
+dashboard and require the project to be wired up to the Cloudflare Pages
+project for the live deployment:
+
+- [ ] D1 binding added in Cloudflare Pages dashboard → Settings → Functions → D1 bindings (binding name: `DB`, points to the same `stremio-manager` database). Local dev gets the binding from `wrangler.toml`; production needs it set in the dashboard separately.
+- [ ] No secrets to set — sessions don't need a signing key.
+- [ ] Deploy as normal (push to GitHub → auto-deploy via the Pages GitHub integration).
+- [ ] Add rate limit rule on `/api/auth/login` in Cloudflare dashboard → Security → WAF (5 req/min per IP). Until this is in place, the password-hash endpoint is the only thing slowing down a brute-force.
+
+Code-side verified: `wrangler.toml` has the D1 binding, `vite.config.ts`
+proxies `/api → localhost:8788` for dev, `functions/tsconfig.json` keeps
+Workers types out of the SPA build, both tsc projects compile clean, vite
+build succeeds.
 
 ---
 

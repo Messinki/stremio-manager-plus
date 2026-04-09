@@ -4,19 +4,12 @@ import {
   updateAddons,
   fetchAddonManifest,
 } from '@/api/addons'
+import { addonStatesApi, savedAddonsApi } from '@/api/backend-client'
 import { checkAllAddonsHealth } from '@/lib/addon-health'
 import { mergeAddons, removeAddons } from '@/lib/addon-merger'
-import {
-  findSavedAddonByUrl,
-  loadAccountAddonStates,
-  loadAddonLibrary,
-  saveAccountAddonStates,
-  saveAddonLibrary,
-} from '@/lib/addon-storage'
+import { findSavedAddonByUrl } from '@/lib/addon-url'
 import { normalizeTagName } from '@/lib/addon-validator'
-import { decrypt } from '@/lib/crypto'
 import { stripDebridApiKey, injectDebridApiKey, DEBRID_KEY_PLACEHOLDER } from '@/lib/debrid-config'
-import { useAuthStore } from '@/store/authStore'
 import { AddonManifest } from '@/types/addon'
 import {
   AccountAddonState,
@@ -27,27 +20,20 @@ import {
   SavedAddon,
 } from '@/types/saved-addon'
 import { create } from 'zustand'
-import localforage from 'localforage'
-
-// Helper function to get encryption key from auth store
-const getEncryptionKey = () => {
-  const key = useAuthStore.getState().encryptionKey
-  if (!key) throw new Error('App is locked')
-  return key
-}
 
 /**
- * Resolve saved addons with decrypted debrid keys.
- * Must be called with already-decrypted debrid keys.
+ * Inject account-scoped debrid API keys into addon install URLs.
+ * Both `savedAddons` and `debridKeys` are now plain text (no decryption step
+ * since the backend stores them in plain D1 columns).
  */
 function resolveAddonsWithKeys(
   savedAddons: SavedAddon[],
-  decryptedDebridKeys: Record<string, string>
+  debridKeys: Record<string, string>
 ): SavedAddon[] {
   return savedAddons.map((addon) => {
     if (!addon.debridConfig) return addon
 
-    const apiKey = decryptedDebridKeys[addon.debridConfig.serviceType]
+    const apiKey = debridKeys[addon.debridConfig.serviceType]
     if (!apiKey) return addon
 
     return {
@@ -161,6 +147,22 @@ interface AddonStore {
   reset: () => void
 }
 
+const libraryToRecord = (addons: SavedAddon[]): Record<string, SavedAddon> => {
+  const record: Record<string, SavedAddon> = {}
+  for (const addon of addons) {
+    record[addon.id] = addon
+  }
+  return record
+}
+
+const statesToRecord = (states: AccountAddonState[]): Record<string, AccountAddonState> => {
+  const record: Record<string, AccountAddonState> = {}
+  for (const state of states) {
+    record[state.accountId] = state
+  }
+  return record
+}
+
 export const useAddonStore = create<AddonStore>((set, get) => ({
   library: {},
   latestVersions: {},
@@ -171,16 +173,16 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
 
   initialize: async () => {
     try {
-      const [library, accountStates, latestVersions] = await Promise.all([
-        loadAddonLibrary(),
-        loadAccountAddonStates(),
-        localforage.getItem<Record<string, string>>('stremio-manager:latest-versions'),
+      const [libraryList, statesList] = await Promise.all([
+        savedAddonsApi.list(),
+        addonStatesApi.list(),
       ])
 
       set({
-        library,
-        accountStates,
-        latestVersions: latestVersions || {},
+        library: libraryToRecord(libraryList),
+        accountStates: statesToRecord(statesList),
+        // latestVersions is an in-memory cache only — no longer persisted.
+        latestVersions: {},
       })
     } catch (error) {
       console.error('Failed to initialize addon store:', error)
@@ -189,9 +191,7 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
   },
 
   updateLatestVersions: (versions) => {
-    const newVersions = { ...get().latestVersions, ...versions }
-    set({ latestVersions: newVersions })
-    localforage.setItem('stremio-manager:latest-versions', newVersions).catch(console.error)
+    set({ latestVersions: { ...get().latestVersions, ...versions } })
   },
 
   getLatestVersion: (manifestId) => {
@@ -205,38 +205,28 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
     try {
       let manifest = existingManifest
 
-      // If no manifest provided, fetch it from the URL
       if (!manifest) {
         const addonDescriptor = await fetchAddonManifest(installUrl)
         manifest = addonDescriptor.manifest
       }
 
-      // Normalize tags
       const normalizedTags = tags.map(normalizeTagName).filter(Boolean)
-
-      // Use provided name or fall back to manifest name
       const addonName = name.trim() || manifest.name
 
       // Detect and strip debrid API key from the URL
       const stripResult = stripDebridApiKey(installUrl)
 
-      const savedAddon: SavedAddon = {
-        id: crypto.randomUUID(),
+      const created = await savedAddonsApi.create({
         name: addonName,
         installUrl: stripResult ? stripResult.templateUrl : installUrl,
         manifest,
         tags: normalizedTags,
-        createdAt: new Date(),
-        updatedAt: new Date(),
         sourceType: 'manual',
         debridConfig: stripResult?.debridConfig,
-      }
+      })
 
-      const library = { ...get().library, [savedAddon.id]: savedAddon }
-      set({ library })
-
-      await saveAddonLibrary(library)
-      return savedAddon.id
+      set({ library: { ...get().library, [created.id]: created } })
+      return created.id
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create saved addon'
       set({ error: message })
@@ -254,22 +244,15 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
         throw new Error('Saved addon not found')
       }
 
-      const updatedSavedAddon = { ...savedAddon }
-
-      // Update other fields
-      if (updates.name !== undefined) {
-        updatedSavedAddon.name = updates.name.trim()
-      }
+      const payload: Parameters<typeof savedAddonsApi.update>[1] = {}
+      if (updates.name !== undefined) payload.name = updates.name.trim()
       if (updates.tags !== undefined) {
-        updatedSavedAddon.tags = updates.tags.map(normalizeTagName).filter(Boolean)
+        payload.tags = updates.tags.map(normalizeTagName).filter(Boolean)
       }
+      if (updates.installUrl !== undefined) payload.installUrl = updates.installUrl
 
-      updatedSavedAddon.updatedAt = new Date()
-
-      const library = { ...get().library, [id]: updatedSavedAddon }
-      set({ library })
-
-      await saveAddonLibrary(library)
+      const updated = await savedAddonsApi.update(id, payload)
+      set({ library: { ...get().library, [id]: updated } })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update saved addon'
       set({ error: message })
@@ -285,7 +268,6 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
       throw new Error('Saved addon not found')
     }
 
-    // Capture previous version for logging
     const previousVersion = savedAddon.manifest.version
 
     // Fetch fresh manifest from the install URL
@@ -297,23 +279,13 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
       throw new Error('Addon ID mismatch - this may be a different addon')
     }
 
-    // Update the saved addon with fresh manifest
-    const updatedSavedAddon = {
-      ...savedAddon,
-      manifest: freshManifest,
-      updatedAt: new Date(),
-    }
+    const updated = await savedAddonsApi.update(id, { manifest: freshManifest })
+    set({ library: { ...get().library, [id]: updated } })
 
-    const library = { ...get().library, [id]: updatedSavedAddon }
-    set({ library })
-
-    await saveAddonLibrary(library)
-
-    // Update latestVersions to clear the update badge
-    const latestVersions = { ...get().latestVersions }
-    latestVersions[freshManifest.id] = freshManifest.version
-    set({ latestVersions })
-    localforage.setItem('stremio-manager:latest-versions', latestVersions).catch(console.error)
+    // Clear the update badge for this manifest id.
+    set({
+      latestVersions: { ...get().latestVersions, [freshManifest.id]: freshManifest.version },
+    })
 
     console.log(
       `Updated saved addon "${savedAddon.name}" from v${previousVersion} to v${freshManifest.version}`
@@ -321,10 +293,10 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
   },
 
   deleteSavedAddon: async (id) => {
+    await savedAddonsApi.remove(id)
     const library = { ...get().library }
     delete library[id]
     set({ library })
-    await saveAddonLibrary(library)
   },
 
   getSavedAddon: (id) => {
@@ -356,22 +328,20 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
       throw new Error('Invalid new tag name')
     }
 
-    const library = { ...get().library }
-    let hasChanges = false
+    const updatedLibrary = { ...get().library }
 
-    for (const savedAddon of Object.values(library)) {
+    for (const savedAddon of Object.values(get().library)) {
       const tagIndex = savedAddon.tags.findIndex((t) => normalizeTagName(t) === normalizedOld)
-      if (tagIndex >= 0) {
-        savedAddon.tags[tagIndex] = normalizedNew
-        savedAddon.updatedAt = new Date()
-        hasChanges = true
-      }
+      if (tagIndex < 0) continue
+
+      const newTags = [...savedAddon.tags]
+      newTags[tagIndex] = normalizedNew
+
+      const updated = await savedAddonsApi.update(savedAddon.id, { tags: newTags })
+      updatedLibrary[savedAddon.id] = updated
     }
 
-    if (hasChanges) {
-      set({ library })
-      await saveAddonLibrary(library)
-    }
+    set({ library: updatedLibrary })
   },
 
   // === Application (Single Saved Addon) ===
@@ -391,17 +361,12 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
       }
 
       // Get current addons from account
-      const authKey = await decrypt(accountAuthKey, getEncryptionKey())
-      const currentAddons = await getAddons(authKey)
+      const currentAddons = await getAddons(accountAuthKey)
 
-      // Resolve debrid keys: decrypt account's debrid keys and inject into addon templates
+      // Inject account debrid keys into addon templates
       let resolvedAddons = [savedAddon]
       if (debridKeys) {
-        const decrypted: Record<string, string> = {}
-        for (const [service, encKey] of Object.entries(debridKeys)) {
-          decrypted[service] = await decrypt(encKey, getEncryptionKey())
-        }
-        resolvedAddons = resolveAddonsWithKeys([savedAddon], decrypted)
+        resolvedAddons = resolveAddonsWithKeys([savedAddon], debridKeys)
       }
 
       // Safety: block if debrid placeholder is still present
@@ -411,21 +376,17 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
         )
       }
 
-      // Merge the saved addon
       const { addons: updatedAddons, result } = await mergeAddons(
         currentAddons,
         resolvedAddons,
         strategy
       )
 
-      // Update account addons
-      await updateAddons(authKey, updatedAddons)
+      await updateAddons(accountAuthKey, updatedAddons)
 
       // Update saved addon lastUsed
-      const library = { ...get().library }
-      library[savedAddonId] = { ...savedAddon, lastUsed: new Date() }
-      set({ library })
-      await saveAddonLibrary(library)
+      const updated = await savedAddonsApi.update(savedAddonId, { lastUsed: new Date() })
+      set({ library: { ...get().library, [savedAddonId]: updated } })
 
       // Sync account state
       await get().syncAccountState(accountId, accountAuthKey)
@@ -465,21 +426,15 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
 
     set({ loading: true, error: null })
     try {
-      // Get current addons from account
-      const authKey = await decrypt(accountAuthKey, getEncryptionKey())
-      const currentAddons = await getAddons(authKey)
+      const currentAddons = await getAddons(accountAuthKey)
 
-      // Resolve debrid keys
       let resolvedAddons = savedAddons
       if (debridKeys) {
-        const decrypted: Record<string, string> = {}
-        for (const [service, encKey] of Object.entries(debridKeys)) {
-          decrypted[service] = await decrypt(encKey, getEncryptionKey())
-        }
-        resolvedAddons = resolveAddonsWithKeys(savedAddons, decrypted)
+        resolvedAddons = resolveAddonsWithKeys(savedAddons, debridKeys)
       }
 
-      // Safety: filter out addons that still have the debrid placeholder
+      // Filter out addons that still have a debrid placeholder
+      // (account is missing the required debrid key).
       const safeAddons = resolvedAddons.filter((addon) => {
         if (addon.installUrl.includes(DEBRID_KEY_PLACEHOLDER)) {
           console.warn(
@@ -490,23 +445,21 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
         return true
       })
 
-      // Merge safe addons with this tag
       const { addons: updatedAddons, result } = await mergeAddons(
         currentAddons,
         safeAddons,
         strategy
       )
 
-      // Update account addons
-      await updateAddons(authKey, updatedAddons)
+      await updateAddons(accountAuthKey, updatedAddons)
 
-      // Update saved addon lastUsed for all applied saved addons
-      const library = { ...get().library }
-      savedAddons.forEach((savedAddon) => {
-        library[savedAddon.id] = { ...savedAddon, lastUsed: new Date() }
-      })
-      set({ library })
-      await saveAddonLibrary(library)
+      // Bump lastUsed for every applied saved addon (one PUT each).
+      const nextLibrary = { ...get().library }
+      for (const savedAddon of savedAddons) {
+        const updated = await savedAddonsApi.update(savedAddon.id, { lastUsed: new Date() })
+        nextLibrary[savedAddon.id] = updated
+      }
+      set({ library: nextLibrary })
 
       // Sync account state
       await get().syncAccountState(accountId, accountAuthKey)
@@ -547,21 +500,13 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
 
       for (const { id: accountId, authKey: accountAuthKey, debridKeys } of accountIds) {
         try {
-          const authKey = await decrypt(accountAuthKey, getEncryptionKey())
-          const currentAddons = await getAddons(authKey)
+          const currentAddons = await getAddons(accountAuthKey)
 
-          // Resolve debrid keys for this account
           let resolvedAddons = savedAddons
           if (debridKeys) {
-            const decrypted: Record<string, string> = {}
-            for (const [service, encKey] of Object.entries(debridKeys)) {
-              decrypted[service] = await decrypt(encKey, getEncryptionKey())
-            }
-            resolvedAddons = resolveAddonsWithKeys(savedAddons, decrypted)
+            resolvedAddons = resolveAddonsWithKeys(savedAddons, debridKeys)
           }
 
-          // Safety: filter out addons that still have the debrid placeholder
-          // (account is missing the required debrid key)
           const safeAddons = resolvedAddons.filter((addon) => {
             if (addon.installUrl.includes(DEBRID_KEY_PLACEHOLDER)) {
               console.warn(
@@ -584,7 +529,7 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
             strategy
           )
 
-          await updateAddons(authKey, updatedAddons)
+          await updateAddons(accountAuthKey, updatedAddons)
 
           result.success++
           result.details.push({ accountId, result: mergeResult })
@@ -600,13 +545,17 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
         }
       }
 
-      // Update saved addon lastUsed for all applied saved addons
-      const library = { ...get().library }
-      savedAddons.forEach((savedAddon) => {
-        library[savedAddon.id] = { ...savedAddon, lastUsed: new Date() }
-      })
-      set({ library })
-      await saveAddonLibrary(library)
+      // Bump lastUsed for every applied saved addon.
+      const nextLibrary = { ...get().library }
+      for (const savedAddon of savedAddons) {
+        try {
+          const updated = await savedAddonsApi.update(savedAddon.id, { lastUsed: new Date() })
+          nextLibrary[savedAddon.id] = updated
+        } catch (e) {
+          console.warn(`Failed to bump lastUsed for ${savedAddon.id}`, e)
+        }
+      }
+      set({ library: nextLibrary })
 
       return result
     } catch (error) {
@@ -643,12 +592,11 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
 
       for (const { id: accountId, authKey: accountAuthKey } of accountIds) {
         try {
-          const authKey = await decrypt(accountAuthKey, getEncryptionKey())
-          const currentAddons = await getAddons(authKey)
+          const currentAddons = await getAddons(accountAuthKey)
 
           const { addons: updatedAddons, protectedAddons } = removeAddons(currentAddons, addonIds)
 
-          await updateAddons(authKey, updatedAddons)
+          await updateAddons(accountAuthKey, updatedAddons)
 
           result.success++
           result.details.push({
@@ -707,8 +655,6 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
 
       for (const { id: accountId, authKey: accountAuthKey } of accountIds) {
         try {
-          const authKey = await decrypt(accountAuthKey, getEncryptionKey())
-
           // Reinstall each addon in place to preserve ordering
           const updateResults: Array<{
             addonId: string
@@ -718,7 +664,7 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
 
           for (const addonId of addonIds) {
             try {
-              const reinstallResult = await reinstallAddonApi(authKey, addonId)
+              const reinstallResult = await reinstallAddonApi(accountAuthKey, addonId)
               if (reinstallResult.updatedAddon) {
                 updateResults.push({
                   addonId,
@@ -727,7 +673,6 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
                 })
               }
             } catch (error) {
-              // Log but continue with other addons
               console.warn(`Failed to reinstall addon ${addonId} on account ${accountId}:`, error)
             }
           }
@@ -774,11 +719,8 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
 
   syncAccountState: async (accountId, accountAuthKey) => {
     try {
-      // Get current addons from Stremio
-      const authKey = await decrypt(accountAuthKey, getEncryptionKey())
-      const currentAddons = await getAddons(authKey)
+      const currentAddons = await getAddons(accountAuthKey)
 
-      // Get existing state
       const existingState = get().accountStates[accountId]
       const installedAddons: InstalledAddon[] = []
 
@@ -786,13 +728,12 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
         const existing = existingState?.installedAddons.find((a) => a.addonId === addon.manifest.id)
 
         if (existing) {
-          // Update existing
           installedAddons.push({
             ...existing,
             installUrl: addon.transportUrl,
           })
         } else {
-          // New addon - try to auto-link to saved addon
+          // New addon - try to auto-link to a saved addon by URL
           const matchingSavedAddon = findSavedAddonByUrl(get().library, addon.transportUrl)
 
           installedAddons.push({
@@ -806,15 +747,15 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
         }
       }
 
-      const state: AccountAddonState = {
+      const persisted = await addonStatesApi.upsert({
         accountId,
         installedAddons,
         lastSync: new Date(),
-      }
+      })
 
-      const accountStates = { ...get().accountStates, [accountId]: state }
-      set({ accountStates })
-      await saveAccountAddonStates(accountStates)
+      set({
+        accountStates: { ...get().accountStates, [accountId]: persisted },
+      })
     } catch (error) {
       console.error('Failed to sync account state:', error)
       throw error
@@ -858,23 +799,37 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
         throw new Error('Invalid export format')
       }
 
-      const library = merge ? { ...get().library } : {}
-
-      for (const savedAddon of savedAddons) {
-        // Generate new ID if merging to avoid conflicts
-        const id = merge ? crypto.randomUUID() : savedAddon.id
-
-        library[id] = {
-          ...savedAddon,
-          id,
-          createdAt: new Date(savedAddon.createdAt),
-          updatedAt: new Date(savedAddon.updatedAt),
-          lastUsed: savedAddon.lastUsed ? new Date(savedAddon.lastUsed) : undefined,
+      // If not merging, wipe the existing library on the backend first.
+      if (!merge) {
+        const existing = Object.values(get().library)
+        for (const addon of existing) {
+          try {
+            await savedAddonsApi.remove(addon.id)
+          } catch (e) {
+            console.warn(`Failed to delete existing saved addon ${addon.id}`, e)
+          }
         }
+        set({ library: {} })
       }
 
-      set({ library })
-      await saveAddonLibrary(library)
+      const nextLibrary: Record<string, SavedAddon> = merge ? { ...get().library } : {}
+
+      for (const savedAddon of savedAddons) {
+        const created = await savedAddonsApi.create({
+          name: savedAddon.name,
+          installUrl: savedAddon.installUrl,
+          manifest: savedAddon.manifest,
+          tags: savedAddon.tags ?? [],
+          debridConfig: savedAddon.debridConfig,
+          sourceType: savedAddon.sourceType ?? 'manual',
+          sourceAccountId: savedAddon.sourceAccountId,
+          health: savedAddon.health,
+          lastUsed: savedAddon.lastUsed ? new Date(savedAddon.lastUsed) : undefined,
+        })
+        nextLibrary[created.id] = created
+      }
+
+      set({ library: nextLibrary })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to import library'
       set({ error: message })
@@ -892,14 +847,19 @@ export const useAddonStore = create<AddonStore>((set, get) => ({
       const addons = Object.values(get().library)
       const updatedAddons = await checkAllAddonsHealth(addons)
 
-      // Update library with health status
-      const library: Record<string, SavedAddon> = {}
-      updatedAddons.forEach((addon) => {
-        library[addon.id] = addon
-      })
+      // Persist health for each addon individually.
+      const nextLibrary = { ...get().library }
+      for (const addon of updatedAddons) {
+        try {
+          const updated = await savedAddonsApi.update(addon.id, { health: addon.health })
+          nextLibrary[addon.id] = updated
+        } catch (e) {
+          console.warn(`Failed to persist health for ${addon.id}`, e)
+          nextLibrary[addon.id] = addon
+        }
+      }
 
-      set({ library })
-      await saveAddonLibrary(library)
+      set({ library: nextLibrary })
     } catch (error) {
       console.error('Failed to check addon health:', error)
     } finally {

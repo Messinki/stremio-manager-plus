@@ -12,8 +12,6 @@ import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { useToast } from '@/hooks/use-toast'
 import { useAccountStore } from '@/store/accountStore'
-import { useAuthStore } from '@/store/authStore'
-import { decrypt } from '@/lib/crypto'
 import { stremioClient } from '@/api/stremio-client'
 import { AddonDescriptor } from '@/types/addon'
 import { CinemetaManifest, CinemetaConfigState, CinemetaPatchStatus } from '@/types/cinemeta'
@@ -52,7 +50,6 @@ export function CinemetaConfigurationDialog({
 
   const { toast } = useToast()
   const syncAccount = useAccountStore((state) => state.syncAccount)
-  const encryptionKey = useAuthStore((state) => state.encryptionKey)
 
   // Detect patches on open
   useEffect(() => {
@@ -85,46 +82,34 @@ export function CinemetaConfigurationDialog({
       patchStatus.metaResourcePatched)
 
   const handleApplyConfiguration = async () => {
-    if (!encryptionKey) {
-      toast({
-        title: 'Error',
-        description: 'Encryption key not found',
-        variant: 'destructive',
-      })
-      return
-    }
-
     setApplying(true)
     try {
-      // 1. Decrypt auth key
-      const authKey = await decrypt(accountAuthKey, encryptionKey)
+      // 1. Get current addon collection
+      const currentAddons = await stremioClient.getAddonCollection(accountAuthKey)
 
-      // 2. Get current addon collection
-      const currentAddons = await stremioClient.getAddonCollection(authKey)
-
-      // 3. Find Cinemeta index
+      // 2. Find Cinemeta index
       const cinemetaIndex = currentAddons.findIndex((a) => a.manifest.id === addon.manifest.id)
       if (cinemetaIndex === -1) {
         throw new Error('Cinemeta addon not found in collection')
       }
 
-      // 4. Apply configuration transformations
+      // 3. Apply configuration transformations
       const modifiedManifest = applyCinemetaConfiguration(
         addon.manifest as CinemetaManifest,
         config
       )
 
-      // 5. Update addon in collection (immutable)
+      // 4. Update addon in collection (immutable)
       const updatedAddons = [...currentAddons]
       updatedAddons[cinemetaIndex] = {
         ...currentAddons[cinemetaIndex],
         manifest: modifiedManifest,
       }
 
-      // 6. Sync to Stremio API
-      await stremioClient.setAddonCollection(authKey, updatedAddons)
+      // 5. Sync to Stremio API
+      await stremioClient.setAddonCollection(accountAuthKey, updatedAddons)
 
-      // 7. Sync account state (refresh local data)
+      // 6. Sync account state (refresh local data)
       await syncAccount(accountId)
 
       toast({
@@ -147,15 +132,6 @@ export function CinemetaConfigurationDialog({
   }
 
   const handleReset = async () => {
-    if (!encryptionKey) {
-      toast({
-        title: 'Error',
-        description: 'Encryption key not found',
-        variant: 'destructive',
-      })
-      return
-    }
-
     setResetting(true)
     try {
       // 1. Fetch original manifest
@@ -167,8 +143,7 @@ export function CinemetaConfigurationDialog({
       }
 
       // 3. Update addon collection with original manifest
-      const authKey = await decrypt(accountAuthKey, encryptionKey)
-      const currentAddons = await stremioClient.getAddonCollection(authKey)
+      const currentAddons = await stremioClient.getAddonCollection(accountAuthKey)
       const cinemetaIndex = currentAddons.findIndex((a) => a.manifest.id === addon.manifest.id)
 
       if (cinemetaIndex === -1) {
@@ -181,7 +156,7 @@ export function CinemetaConfigurationDialog({
         manifest: originalManifest,
       }
 
-      await stremioClient.setAddonCollection(authKey, updatedAddons)
+      await stremioClient.setAddonCollection(accountAuthKey, updatedAddons)
       await syncAccount(accountId)
 
       // 4. Reset toggles

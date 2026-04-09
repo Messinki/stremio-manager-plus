@@ -7,9 +7,11 @@ export interface StremioAccount {
   id: string
   name: string
   email?: string
-  authKey: string // Encrypted
-  password?: string // Encrypted (optional)
-  debridKeys?: Record<string, string> // Encrypted debrid API keys, keyed by service type (e.g., 'realdebrid')
+  authKey: string
+  password?: string
+  /** Debrid API keys keyed by service type (e.g., 'realdebrid'). Stored as
+   *  plain text in the backend D1 database (encrypted at rest by Cloudflare). */
+  debridKeys?: Record<string, string>
   addons: AddonDescriptor[]
   lastSync: Date
   status: AccountStatus

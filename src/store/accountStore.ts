@@ -5,20 +5,14 @@ import {
   updateAddons,
 } from '@/api/addons'
 import { loginWithCredentials } from '@/api/auth'
-import { decrypt, encrypt } from '@/lib/crypto'
-import { useAuthStore } from '@/store/authStore'
+import { accountsApi, savedAddonsApi } from '@/api/backend-client'
 import { accountExportSchema } from '@/lib/validation'
-import { loadAddonLibrary, saveAddonLibrary } from '@/lib/addon-storage'
 import { extractDebridKeysFromAddons, getDebridServiceLabel } from '@/lib/debrid-config'
 import { updateLatestVersions as updateLatestVersionsCoordinator } from '@/lib/store-coordinator'
 import { toast } from '@/hooks/use-toast'
 import { AccountExport, StremioAccount } from '@/types/account'
 import { AddonDescriptor } from '@/types/addon'
-import { SavedAddon } from '@/types/saved-addon'
-import localforage from 'localforage'
 import { create } from 'zustand'
-
-const STORAGE_KEY = 'stremio-manager:accounts'
 
 // Helper function to sanitize addon manifests by converting null to undefined
 const sanitizeAddonManifest = (manifest: AddonDescriptor['manifest']) => {
@@ -30,12 +24,8 @@ const sanitizeAddonManifest = (manifest: AddonDescriptor['manifest']) => {
   }
 }
 
-// Helper function to get encryption key from auth store
-const getEncryptionKey = () => {
-  const key = useAuthStore.getState().encryptionKey
-  if (!key) throw new Error('App is locked')
-  return key
-}
+const sanitizeAddons = (addons: AddonDescriptor[]) =>
+  addons.map((addon) => ({ ...addon, manifest: sanitizeAddonManifest(addon.manifest) }))
 
 interface AccountStore {
   accounts: StremioAccount[]
@@ -72,19 +62,11 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
 
   initialize: async () => {
     try {
-      const storedAccounts = await localforage.getItem<StremioAccount[]>(STORAGE_KEY)
-
-      if (storedAccounts && Array.isArray(storedAccounts)) {
-        // Convert date strings back to Date objects
-        const accounts = storedAccounts.map((acc) => ({
-          ...acc,
-          lastSync: new Date(acc.lastSync),
-        }))
-        set({ accounts })
-      }
+      const accounts = await accountsApi.list()
+      set({ accounts, error: null })
     } catch (error) {
-      console.error('Failed to load accounts from storage:', error)
-      set({ error: 'Failed to load saved accounts' })
+      console.error('Failed to load accounts from backend:', error)
+      set({ error: 'Failed to load accounts' })
     }
   },
 
@@ -97,27 +79,17 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
     try {
       // Validate auth key by fetching addons
       const addons = await getAddons(authKey)
+      const normalizedAddons = sanitizeAddons(addons)
 
-      // Normalize addon manifests
-      const normalizedAddons = addons.map((addon) => ({
-        ...addon,
-        manifest: sanitizeAddonManifest(addon.manifest),
-      }))
-
-      const account: StremioAccount = {
-        id: crypto.randomUUID(),
+      const created = await accountsApi.create({
         name,
-        authKey: await encrypt(authKey, getEncryptionKey()),
+        authKey,
         addons: normalizedAddons,
         lastSync: new Date(),
         status: 'active',
-      }
+      })
 
-      const accounts = [...get().accounts, account]
-      set({ accounts })
-
-      // Persist to storage
-      await localforage.setItem(STORAGE_KEY, accounts)
+      set({ accounts: [...get().accounts, created] })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to add account'
       set({ error: message })
@@ -130,34 +102,21 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
   addAccountByCredentials: async (email, password, name) => {
     set({ loading: true, error: null })
     try {
-      // Login to get auth key
       const response = await loginWithCredentials(email, password)
-
-      // Fetch addons
       const addons = await getAddons(response.authKey)
+      const normalizedAddons = sanitizeAddons(addons)
 
-      // Normalize addon manifests
-      const normalizedAddons = addons.map((addon) => ({
-        ...addon,
-        manifest: sanitizeAddonManifest(addon.manifest),
-      }))
-
-      const account: StremioAccount = {
-        id: crypto.randomUUID(),
+      const created = await accountsApi.create({
         name: name || email,
         email,
-        authKey: await encrypt(response.authKey, getEncryptionKey()),
-        password: await encrypt(password, getEncryptionKey()),
+        authKey: response.authKey,
+        password,
         addons: normalizedAddons,
         lastSync: new Date(),
         status: 'active',
-      }
+      })
 
-      const accounts = [...get().accounts, account]
-      set({ accounts })
-
-      // Persist to storage
-      await localforage.setItem(STORAGE_KEY, accounts)
+      set({ accounts: [...get().accounts, created] })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to add account'
       set({ error: message })
@@ -168,9 +127,9 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
   },
 
   removeAccount: async (id) => {
+    await accountsApi.remove(id)
     const accounts = get().accounts.filter((acc) => acc.id !== id)
     set({ accounts })
-    await localforage.setItem(STORAGE_KEY, accounts)
   },
 
   syncAccount: async (id) => {
@@ -181,14 +140,8 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
         throw new Error('Account not found')
       }
 
-      const authKey = await decrypt(account.authKey, getEncryptionKey())
-      const addons = await getAddons(authKey)
-
-      // Normalize addon manifests
-      const normalizedAddons = addons.map((addon) => ({
-        ...addon,
-        manifest: sanitizeAddonManifest(addon.manifest),
-      }))
+      const addons = await getAddons(account.authKey)
+      const normalizedAddons = sanitizeAddons(addons)
 
       // Auto-detect debrid keys from addon URLs
       const detectedKeys = extractDebridKeysFromAddons(normalizedAddons)
@@ -198,25 +151,21 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
       for (const { serviceType, apiKey, addonName } of detectedKeys) {
         if (!debridKeys || !debridKeys[serviceType]) {
           if (!debridKeys) debridKeys = {}
-          debridKeys[serviceType] = await encrypt(apiKey, getEncryptionKey())
+          debridKeys[serviceType] = apiKey
           newlyDetected.push({ serviceType, addonName })
         }
       }
 
-      const updatedAccount = {
-        ...account,
+      const updated = await accountsApi.update(id, {
         addons: normalizedAddons,
         debridKeys,
         lastSync: new Date(),
-        status: 'active' as const,
-      }
+        status: 'active',
+      })
 
-      const accounts = get().accounts.map((acc) => (acc.id === id ? updatedAccount : acc))
-
+      const accounts = get().accounts.map((acc) => (acc.id === id ? updated : acc))
       set({ accounts })
-      await localforage.setItem(STORAGE_KEY, accounts)
 
-      // Notify about auto-detected keys
       if (newlyDetected.length > 0) {
         const keyList = newlyDetected
           .map((k) => `${getDebridServiceLabel(k.serviceType)} (from ${k.addonName})`)
@@ -230,20 +179,29 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
       const message = error instanceof Error ? error.message : 'Failed to sync account'
       const account = get().accounts.find((acc) => acc.id === id)
 
-      // Mark account as error
-      const accounts = get().accounts.map((acc) =>
-        acc.id === id ? { ...acc, status: 'error' as const } : acc
-      )
-      set({ accounts, error: message })
+      // Mark account as error (best-effort: persist via API too)
+      try {
+        if (account) {
+          const updated = await accountsApi.update(id, { status: 'error' })
+          const accounts = get().accounts.map((acc) => (acc.id === id ? updated : acc))
+          set({ accounts })
+        }
+      } catch {
+        // ignore — local update below still happens
+      }
 
-      // Show toast notification
+      set((state) => ({
+        accounts: state.accounts.map((acc) =>
+          acc.id === id ? { ...acc, status: 'error' as const } : acc
+        ),
+        error: message,
+      }))
+
       toast({
         variant: 'destructive',
         title: 'Sync Failed',
         description: `Unable to sync "${account?.name}". Please check your credentials.`,
       })
-
-      await localforage.setItem(STORAGE_KEY, accounts)
       throw error
     } finally {
       set({ loading: false })
@@ -256,14 +214,8 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
 
     for (const account of accounts) {
       try {
-        const authKey = await decrypt(account.authKey, getEncryptionKey())
-        const addons = await getAddons(authKey)
-
-        // Normalize addon manifests
-        const normalizedAddons = addons.map((addon) => ({
-          ...addon,
-          manifest: sanitizeAddonManifest(addon.manifest),
-        }))
+        const addons = await getAddons(account.authKey)
+        const normalizedAddons = sanitizeAddons(addons)
 
         // Auto-detect debrid keys from addon URLs
         const detectedKeys = extractDebridKeysFromAddons(normalizedAddons)
@@ -273,26 +225,22 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
         for (const { serviceType, apiKey, addonName } of detectedKeys) {
           if (!debridKeys || !debridKeys[serviceType]) {
             if (!debridKeys) debridKeys = {}
-            debridKeys[serviceType] = await encrypt(apiKey, getEncryptionKey())
+            debridKeys[serviceType] = apiKey
             newlyDetected.push({ serviceType, addonName })
           }
         }
 
-        const updatedAccount = {
-          ...account,
+        const updated = await accountsApi.update(account.id, {
           addons: normalizedAddons,
           debridKeys,
           lastSync: new Date(),
-          status: 'active' as const,
-        }
+          status: 'active',
+        })
 
-        const updatedAccounts = get().accounts.map((acc) =>
-          acc.id === account.id ? updatedAccount : acc
-        )
+        set({
+          accounts: get().accounts.map((acc) => (acc.id === account.id ? updated : acc)),
+        })
 
-        set({ accounts: updatedAccounts })
-
-        // Notify about auto-detected keys
         if (newlyDetected.length > 0) {
           const keyList = newlyDetected
             .map((k) => `${getDebridServiceLabel(k.serviceType)} (from ${k.addonName})`)
@@ -303,13 +251,19 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
           })
         }
       } catch (error) {
-        // Mark account as error but continue with others
-        const updatedAccounts = get().accounts.map((acc) =>
-          acc.id === account.id ? { ...acc, status: 'error' as const } : acc
-        )
-        set({ accounts: updatedAccounts })
+        try {
+          const updated = await accountsApi.update(account.id, { status: 'error' })
+          set({
+            accounts: get().accounts.map((acc) => (acc.id === account.id ? updated : acc)),
+          })
+        } catch {
+          set({
+            accounts: get().accounts.map((acc) =>
+              acc.id === account.id ? { ...acc, status: 'error' as const } : acc
+            ),
+          })
+        }
 
-        // Show toast notification for this account
         toast({
           variant: 'destructive',
           title: 'Sync Failed',
@@ -318,7 +272,6 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
       }
     }
 
-    await localforage.setItem(STORAGE_KEY, get().accounts)
     set({ loading: false })
   },
 
@@ -330,25 +283,17 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
         throw new Error('Account not found')
       }
 
-      const authKey = await decrypt(account.authKey, getEncryptionKey())
-      const updatedAddons = await apiInstallAddon(authKey, addonUrl)
+      const updatedAddons = await apiInstallAddon(account.authKey, addonUrl)
+      const normalizedAddons = sanitizeAddons(updatedAddons)
 
-      // Normalize addon manifests
-      const normalizedAddons = updatedAddons.map((addon) => ({
-        ...addon,
-        manifest: sanitizeAddonManifest(addon.manifest),
-      }))
-
-      const updatedAccount = {
-        ...account,
+      const updated = await accountsApi.update(accountId, {
         addons: normalizedAddons,
         lastSync: new Date(),
-      }
+      })
 
-      const accounts = get().accounts.map((acc) => (acc.id === accountId ? updatedAccount : acc))
-
-      set({ accounts })
-      await localforage.setItem(STORAGE_KEY, accounts)
+      set({
+        accounts: get().accounts.map((acc) => (acc.id === accountId ? updated : acc)),
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to install addon'
       set({ error: message })
@@ -366,25 +311,17 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
         throw new Error('Account not found')
       }
 
-      const authKey = await decrypt(account.authKey, getEncryptionKey())
-      const updatedAddons = await apiRemoveAddon(authKey, addonId)
+      const updatedAddons = await apiRemoveAddon(account.authKey, addonId)
+      const normalizedAddons = sanitizeAddons(updatedAddons)
 
-      // Normalize addon manifests
-      const normalizedAddons = updatedAddons.map((addon) => ({
-        ...addon,
-        manifest: sanitizeAddonManifest(addon.manifest),
-      }))
-
-      const updatedAccount = {
-        ...account,
+      const updated = await accountsApi.update(accountId, {
         addons: normalizedAddons,
         lastSync: new Date(),
-      }
+      })
 
-      const accounts = get().accounts.map((acc) => (acc.id === accountId ? updatedAccount : acc))
-
-      set({ accounts })
-      await localforage.setItem(STORAGE_KEY, accounts)
+      set({
+        accounts: get().accounts.map((acc) => (acc.id === accountId ? updated : acc)),
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to remove addon'
       set({ error: message })
@@ -402,19 +339,16 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
         throw new Error('Account not found')
       }
 
-      const authKey = await decrypt(account.authKey, getEncryptionKey())
-      await updateAddons(authKey, newOrder)
+      await updateAddons(account.authKey, newOrder)
 
-      const updatedAccount = {
-        ...account,
+      const updated = await accountsApi.update(accountId, {
         addons: newOrder,
         lastSync: new Date(),
-      }
+      })
 
-      const accounts = get().accounts.map((acc) => (acc.id === accountId ? updatedAccount : acc))
-
-      set({ accounts })
-      await localforage.setItem(STORAGE_KEY, accounts)
+      set({
+        accounts: get().accounts.map((acc) => (acc.id === accountId ? updated : acc)),
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to reorder addons'
       set({ error: message })
@@ -425,124 +359,82 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
   },
 
   exportAccounts: async (includeCredentials) => {
+    // Pull the saved-addon library from the backend so the export bundles both
+    // accounts and the user's library — matches the previous local-only behavior.
+    let savedAddonsExport: AccountExport['savedAddons'] = undefined
     try {
-      // Load saved addon library
-      const addonLibrary = await loadAddonLibrary()
-      const savedAddons = Object.values(addonLibrary).map((addon) => ({
-        ...addon,
-        manifest: sanitizeAddonManifest(addon.manifest),
-        createdAt: addon.createdAt.toISOString(),
-        updatedAt: addon.updatedAt.toISOString(),
-        lastUsed: addon.lastUsed?.toISOString(),
-      }))
-
-      const data: AccountExport = {
-        version: '1.0.0',
-        exportedAt: new Date().toISOString(),
-        accounts: await Promise.all(
-          get().accounts.map(async (acc) => ({
-            name: acc.name,
-            email: acc.email,
-            authKey: includeCredentials
-              ? await decrypt(acc.authKey, getEncryptionKey())
-              : undefined,
-            password:
-              includeCredentials && acc.password
-                ? await decrypt(acc.password, getEncryptionKey())
-                : undefined,
-            addons: acc.addons.map((addon) => ({
-              ...addon,
-              manifest: sanitizeAddonManifest(addon.manifest),
-            })),
-          }))
-        ),
-        savedAddons: savedAddons.length > 0 ? savedAddons : undefined,
+      const library = await savedAddonsApi.list()
+      if (library.length > 0) {
+        savedAddonsExport = library.map((addon) => ({
+          ...addon,
+          manifest: sanitizeAddonManifest(addon.manifest),
+          createdAt: addon.createdAt.toISOString(),
+          updatedAt: addon.updatedAt.toISOString(),
+          lastUsed: addon.lastUsed?.toISOString(),
+        }))
       }
-
-      return JSON.stringify(data, null, 2)
     } catch (error) {
       console.error('Failed to load addon library during export:', error)
-      // Fallback: export without saved addons
-      const data: AccountExport = {
-        version: '1.0.0',
-        exportedAt: new Date().toISOString(),
-        accounts: await Promise.all(
-          get().accounts.map(async (acc) => ({
-            name: acc.name,
-            email: acc.email,
-            authKey: includeCredentials
-              ? await decrypt(acc.authKey, getEncryptionKey())
-              : undefined,
-            password:
-              includeCredentials && acc.password
-                ? await decrypt(acc.password, getEncryptionKey())
-                : undefined,
-            addons: acc.addons.map((addon) => ({
-              ...addon,
-              manifest: sanitizeAddonManifest(addon.manifest),
-            })),
-          }))
-        ),
-      }
-
-      return JSON.stringify(data, null, 2)
     }
+
+    const data: AccountExport = {
+      version: '1.0.0',
+      exportedAt: new Date().toISOString(),
+      accounts: get().accounts.map((acc) => ({
+        name: acc.name,
+        email: acc.email,
+        authKey: includeCredentials ? acc.authKey : undefined,
+        password: includeCredentials ? acc.password : undefined,
+        addons: sanitizeAddons(acc.addons),
+      })),
+      savedAddons: savedAddonsExport,
+    }
+
+    return JSON.stringify(data, null, 2)
   },
 
   importAccounts: async (json) => {
     set({ loading: true, error: null })
     try {
       const data = JSON.parse(json)
-
-      // Validate with Zod
       const validated = accountExportSchema.parse(data)
 
-      const newAccounts: StremioAccount[] = await Promise.all(
-        validated.accounts.map(async (acc) => ({
-          id: crypto.randomUUID(),
+      // Create each account on the backend, collect what came back so the
+      // store has the canonical (with id, timestamps) row.
+      const created: StremioAccount[] = []
+      for (const acc of validated.accounts) {
+        const newAccount = await accountsApi.create({
           name: acc.name,
           email: acc.email,
-          authKey: acc.authKey ? await encrypt(acc.authKey, getEncryptionKey()) : '',
-          password: acc.password ? await encrypt(acc.password, getEncryptionKey()) : undefined,
-          addons: acc.addons.map((addon) => ({
-            ...addon,
-            manifest: sanitizeAddonManifest(addon.manifest),
-          })),
+          authKey: acc.authKey ?? '',
+          password: acc.password,
+          addons: sanitizeAddons(acc.addons),
           lastSync: new Date(),
           status: 'active',
-        }))
-      )
+        })
+        created.push(newAccount)
+      }
 
-      // Merge with existing accounts
-      const accounts = [...get().accounts, ...newAccounts]
-      set({ accounts })
+      set({ accounts: [...get().accounts, ...created] })
 
-      await localforage.setItem(STORAGE_KEY, accounts)
-
-      // Import saved addons if present
+      // Import saved addons if present (also via the backend).
       if (validated.savedAddons && validated.savedAddons.length > 0) {
         try {
-          const existingLibrary = await loadAddonLibrary()
-
-          // Merge saved addons with existing library (generate new IDs to avoid conflicts)
-          const newLibrary = { ...existingLibrary }
           for (const savedAddon of validated.savedAddons) {
-            const newId = crypto.randomUUID()
-            const addon: SavedAddon = {
-              ...savedAddon,
-              id: newId,
+            await savedAddonsApi.create({
+              name: savedAddon.name,
+              installUrl: savedAddon.installUrl,
               manifest: sanitizeAddonManifest(savedAddon.manifest),
-              createdAt: new Date(savedAddon.createdAt),
-              updatedAt: new Date(savedAddon.updatedAt),
+              tags: savedAddon.tags,
+              debridConfig: savedAddon.debridConfig,
+              sourceType: savedAddon.sourceType,
+              sourceAccountId: savedAddon.sourceAccountId,
+              health: savedAddon.health,
               lastUsed: savedAddon.lastUsed ? new Date(savedAddon.lastUsed) : undefined,
-            }
-            newLibrary[newId] = addon
+            })
           }
-
-          await saveAddonLibrary(newLibrary)
         } catch (error) {
           console.error('Failed to import saved addons:', error)
-          // Don't fail the entire import if saved addons fail
           toast({
             variant: 'destructive',
             title: 'Warning',
@@ -567,7 +459,7 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
         throw new Error('Account not found')
       }
 
-      const updatedAccount = { ...account, name: data.name }
+      const writePayload: Parameters<typeof accountsApi.update>[1] = { name: data.name }
 
       // If credentials changed, re-validate
       if (data.authKey || (data.email && data.password)) {
@@ -575,33 +467,26 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
 
         if (data.authKey) {
           authKey = data.authKey
-          updatedAccount.authKey = await encrypt(authKey, getEncryptionKey())
+          writePayload.authKey = authKey
         } else if (data.email && data.password) {
           const response = await loginWithCredentials(data.email, data.password)
           authKey = response.authKey
-          updatedAccount.email = data.email
-          updatedAccount.password = await encrypt(data.password, getEncryptionKey())
-          updatedAccount.authKey = await encrypt(authKey, getEncryptionKey())
+          writePayload.email = data.email
+          writePayload.password = data.password
+          writePayload.authKey = authKey
         }
 
-        // Fetch addons with new key
         const addons = await getAddons(authKey)
-
-        // Normalize addon manifests
-        const normalizedAddons = addons.map((addon) => ({
-          ...addon,
-          manifest: sanitizeAddonManifest(addon.manifest),
-        }))
-
-        updatedAccount.addons = normalizedAddons
-        updatedAccount.status = 'active'
-        updatedAccount.lastSync = new Date()
+        writePayload.addons = sanitizeAddons(addons)
+        writePayload.status = 'active'
+        writePayload.lastSync = new Date()
       }
 
-      const accounts = get().accounts.map((acc) => (acc.id === id ? updatedAccount : acc))
+      const updated = await accountsApi.update(id, writePayload)
 
-      set({ accounts })
-      await localforage.setItem(STORAGE_KEY, accounts)
+      set({
+        accounts: get().accounts.map((acc) => (acc.id === id ? updated : acc)),
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to update account'
       set({ error: message })
@@ -615,13 +500,12 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
     const account = get().accounts.find((acc) => acc.id === accountId)
     if (!account) throw new Error('Account not found')
 
-    const encryptedKey = await encrypt(apiKey, getEncryptionKey())
-    const debridKeys = { ...account.debridKeys, [serviceType]: encryptedKey }
-    const updatedAccount = { ...account, debridKeys }
+    const debridKeys = { ...account.debridKeys, [serviceType]: apiKey }
+    const updated = await accountsApi.update(accountId, { debridKeys })
 
-    const accounts = get().accounts.map((acc) => (acc.id === accountId ? updatedAccount : acc))
-    set({ accounts })
-    await localforage.setItem(STORAGE_KEY, accounts)
+    set({
+      accounts: get().accounts.map((acc) => (acc.id === accountId ? updated : acc)),
+    })
   },
 
   removeDebridKey: async (accountId, serviceType) => {
@@ -630,14 +514,13 @@ export const useAccountStore = create<AccountStore>((set, get) => ({
 
     const debridKeys = { ...account.debridKeys }
     delete debridKeys[serviceType]
-    const updatedAccount = {
-      ...account,
-      debridKeys: Object.keys(debridKeys).length > 0 ? debridKeys : undefined,
-    }
+    const nextDebridKeys = Object.keys(debridKeys).length > 0 ? debridKeys : null
 
-    const accounts = get().accounts.map((acc) => (acc.id === accountId ? updatedAccount : acc))
-    set({ accounts })
-    await localforage.setItem(STORAGE_KEY, accounts)
+    const updated = await accountsApi.update(accountId, { debridKeys: nextDebridKeys })
+
+    set({
+      accounts: get().accounts.map((acc) => (acc.id === accountId ? updated : acc)),
+    })
   },
 
   clearError: () => {
