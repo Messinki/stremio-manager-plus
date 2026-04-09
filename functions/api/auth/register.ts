@@ -7,7 +7,7 @@
 
 import { hashPassword } from '../_lib/password'
 import { buildSessionCookie, createSession } from '../_lib/session'
-import { error, json, methodNotAllowed } from '../_lib/response'
+import { error, json, methodNotAllowed, serverError } from '../_lib/response'
 import { newId } from '../_lib/id'
 import type { Env, UserRow } from '../_lib/types'
 
@@ -32,28 +32,33 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   if (!email || !email.includes('@')) return error('Valid email is required')
   if (password.length < 8) return error('Password must be at least 8 characters')
 
-  const existing = await context.env.DB.prepare('SELECT id FROM users WHERE email = ?')
-    .bind(email)
-    .first<Pick<UserRow, 'id'>>()
-  if (existing) return error('An account with that email already exists', 409)
+  try {
+    const existing = await context.env.DB.prepare('SELECT id FROM users WHERE email = ?')
+      .bind(email)
+      .first<Pick<UserRow, 'id'>>()
+    if (existing) return error('An account with that email already exists', 409)
 
-  const { hash, salt } = await hashPassword(password)
-  const id = newId()
-  const now = Date.now()
+    const { hash, salt } = await hashPassword(password)
+    const id = newId()
+    const now = Date.now()
 
-  await context.env.DB.prepare(
-    'INSERT INTO users (id, email, password_hash, password_salt, created_at) VALUES (?, ?, ?, ?, ?)'
-  )
-    .bind(id, email, hash, salt, now)
-    .run()
+    await context.env.DB.prepare(
+      'INSERT INTO users (id, email, password_hash, password_salt, created_at) VALUES (?, ?, ?, ?, ?)'
+    )
+      .bind(id, email, hash, salt, now)
+      .run()
 
-  const token = await createSession(context.env, id)
+    const token = await createSession(context.env, id)
 
-  return json(
-    { user: { id, email } },
-    {
-      status: 201,
-      headers: { 'Set-Cookie': buildSessionCookie(token) },
-    }
-  )
+    return json(
+      { user: { id, email } },
+      {
+        status: 201,
+        headers: { 'Set-Cookie': buildSessionCookie(token) },
+      }
+    )
+  } catch (err) {
+    console.error('Register error:', err)
+    return serverError(err instanceof Error ? err.message : 'Registration failed')
+  }
 }

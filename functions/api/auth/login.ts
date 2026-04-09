@@ -7,7 +7,7 @@
 
 import { verifyPassword } from '../_lib/password'
 import { buildSessionCookie, createSession } from '../_lib/session'
-import { error, json, methodNotAllowed, unauthorized } from '../_lib/response'
+import { error, json, methodNotAllowed, serverError, unauthorized } from '../_lib/response'
 import type { Env, UserRow } from '../_lib/types'
 
 interface LoginBody {
@@ -30,21 +30,26 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
   if (!email || !password) return error('Email and password are required')
 
-  const user = await context.env.DB.prepare(
-    'SELECT id, email, password_hash, password_salt, created_at FROM users WHERE email = ?'
-  )
-    .bind(email)
-    .first<UserRow>()
+  try {
+    const user = await context.env.DB.prepare(
+      'SELECT id, email, password_hash, password_salt, created_at FROM users WHERE email = ?'
+    )
+      .bind(email)
+      .first<UserRow>()
 
-  if (!user) return unauthorized('Invalid email or password')
+    if (!user) return unauthorized('Invalid email or password')
 
-  const ok = await verifyPassword(password, user.password_hash, user.password_salt)
-  if (!ok) return unauthorized('Invalid email or password')
+    const ok = await verifyPassword(password, user.password_hash, user.password_salt)
+    if (!ok) return unauthorized('Invalid email or password')
 
-  const token = await createSession(context.env, user.id)
+    const token = await createSession(context.env, user.id)
 
-  return json(
-    { user: { id: user.id, email: user.email } },
-    { headers: { 'Set-Cookie': buildSessionCookie(token) } }
-  )
+    return json(
+      { user: { id: user.id, email: user.email } },
+      { headers: { 'Set-Cookie': buildSessionCookie(token) } }
+    )
+  } catch (err) {
+    console.error('Login error:', err)
+    return serverError(err instanceof Error ? err.message : 'Login failed')
+  }
 }

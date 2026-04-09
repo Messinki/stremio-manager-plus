@@ -7,7 +7,9 @@
  * Web Crypto is built into Workers — no npm package needed.
  */
 
-const PBKDF2_ITERATIONS = 600_000
+// Workers free tier has a 10ms CPU limit. 600k iterations blows past that.
+// 100k is the minimum OWASP recommends for PBKDF2-SHA256 and runs within budget.
+const PBKDF2_ITERATIONS = 100_000
 const SALT_BYTES = 16
 const HASH_BYTES = 32
 
